@@ -470,6 +470,12 @@ static float bell_local(float t, float center, float width) {
     return expf(-x * x);
 }
 
+static float window_local(float t, float start, float end, float fade) {
+    float in = smoothstep_local((t - start) / fade);
+    float out = smoothstep_local((t - end) / fade);
+    return clampf_local(in - out, 0.0f, 1.0f);
+}
+
 static float fractf_local(float v) {
     return v - floorf(v);
 }
@@ -597,6 +603,12 @@ static vec3_t v3_sub(vec3_t a, vec3_t b) {
 
 static vec3_t v3_scale(vec3_t a, float s) {
     return v3(a.x * s, a.y * s, a.z * s);
+}
+
+static vec3_t v3_mix(vec3_t a, vec3_t b, float t) {
+    return v3(mixf_local(a.x, b.x, t),
+              mixf_local(a.y, b.y, t),
+              mixf_local(a.z, b.z, t));
 }
 
 static vec3_t rot_x(vec3_t p, float a) {
@@ -1035,23 +1047,52 @@ static void draw_scene_tank_wars(float scene_t) {
 
 static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
     int ybuf[WIDTH];
-    float scene_scale = 80.0f;
     vec3_t plane = paper_plane_path(scene_t);
     float plane_yaw, plane_pitch, plane_roll;
     paper_plane_attitude(scene_t, &plane_yaw, &plane_pitch, &plane_roll);
+     float flyby_w = window_local(scene_t, 7.8f, 13.8f, 1.6f);
+     float skim_w = window_local(scene_t, 25.0f, 29.2f, 1.0f);
     vec3_t chase_anchor = paper_plane_path(scene_t - 0.95f);
     float chase_yaw, chase_pitch, unused_roll;
     paper_plane_attitude(scene_t - 0.35f, &chase_yaw, &chase_pitch, &unused_roll);
-    vec3_t cam = ship_tf(v3(2.7f * sinf(scene_t * 0.24f + 0.7f),
-                            2.2f + 0.35f * cosf(scene_t * 0.41f),
-                            -11.5f),
-                         chase_anchor, chase_yaw, chase_pitch * 0.35f, 0.0f, 1.0f);
     vec3_t lookahead = paper_plane_path(scene_t + 1.35f);
-    vec3_t focus = v3_add(v3_scale(v3_add(plane, lookahead), 0.5f), v3(0.0f, -1.0f, 0.0f));
+     vec3_t chase_cam = ship_tf(v3(2.5f * sinf(scene_t * 0.24f + 0.7f),
+                                             2.2f + 0.35f * cosf(scene_t * 0.41f),
+                                             -11.5f),
+                                         chase_anchor, chase_yaw, chase_pitch * 0.35f, 0.0f, 1.0f);
+     vec3_t chase_focus = v3_add(v3_mix(plane, lookahead, 0.55f), v3(0.0f, -1.0f, 0.0f));
+
+     vec3_t fly_anchor = paper_plane_path(scene_t + 0.65f);
+    float fly_yaw, fly_pitch, unused_fly_roll;
+    paper_plane_attitude(scene_t + 0.65f, &fly_yaw, &fly_pitch, &unused_fly_roll);
+     vec3_t fly_cam = ship_tf(v3(8.6f,
+                                          1.4f + 0.30f * cosf(scene_t * 0.52f),
+                                          -2.0f),
+                                      fly_anchor, fly_yaw, fly_pitch * 0.12f, 0.0f, 1.0f);
+     vec3_t fly_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 0.35f), 0.20f),
+                                        v3(0.0f, -0.9f, 0.0f));
+
+     vec3_t skim_anchor = paper_plane_path(scene_t - 0.18f);
+    float skim_yaw, skim_pitch, unused_skim_roll;
+    paper_plane_attitude(scene_t + 0.10f, &skim_yaw, &skim_pitch, &unused_skim_roll);
+     vec3_t skim_cam = ship_tf(v3(-4.5f,
+                                            -0.25f + 0.15f * sinf(scene_t * 0.80f),
+                                            -6.8f),
+                                        skim_anchor, skim_yaw, skim_pitch * 0.16f, 0.0f, 1.0f);
+     float skim_floor = terrain_height(skim_cam.x, skim_cam.z) + 0.95f;
+     if (skim_cam.y < skim_floor) skim_cam.y = skim_floor;
+     vec3_t skim_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 1.65f), 0.68f),
+                                         v3(0.0f, -1.8f, 0.0f));
+
+     vec3_t cam = v3_mix(chase_cam, fly_cam, flyby_w);
+     vec3_t focus = v3_mix(chase_focus, fly_focus, flyby_w);
+     cam = v3_mix(cam, skim_cam, skim_w);
+     focus = v3_mix(focus, skim_focus, skim_w);
     vec3_t focus_delta = v3_sub(focus, cam);
     float yaw = -atan2f(focus_delta.x, focus_delta.z);
     float pitch = atan2f(focus_delta.y,
                          sqrtf(focus_delta.x * focus_delta.x + focus_delta.z * focus_delta.z));
+     float scene_scale = mixf_local(79.0f, 86.0f, clampf_local(0.35f * flyby_w + 0.80f * skim_w, 0.0f, 1.0f));
     float cam_h = cam.y;
     float horizon_y = 14.0f + pitch * 22.0f;
 
@@ -1086,18 +1127,58 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
             bline(x - 1, ybuf[x - 1], x, ybuf[x]);
     }
 
+    for (int i = 0; i < 12; i++) {
+        int cell = (int)floorf(cam.z * 0.65f) + i;
+        float wz = cell * 1.75f + hash01(cell * 19 + 3) * 1.1f;
+        float wx = (hash01(cell * 29 + 11) - 0.5f) * 30.0f + 3.8f * sinf(cell * 0.31f);
+        float base_h = terrain_height(wx, wz) + 0.05f;
+        float rush_h = 0.45f + 1.10f * hash01(cell * 41 + 17);
+        vec3_t base = v3(wx, base_h, wz);
+        vec3_t tip = v3(wx + 0.15f * sinf((float)cell),
+                        base_h + rush_h,
+                        wz + 0.15f * cosf((float)cell));
+        int sx0, sy0, sx1, sy1;
+
+        if (!project_world(base, cam, yaw, pitch, scene_scale, &sx0, &sy0)) continue;
+        if (!project_world(tip, cam, yaw, pitch, scene_scale, &sx1, &sy1)) continue;
+        if (sx0 < 1 || sx0 >= WIDTH - 1 || sy0 < BLUE_H / 2 || sy0 >= BLUE_H) continue;
+        if (fabsf(wx - plane.x) < 4.0f && fabsf(wz - plane.z) < 6.0f) continue;
+        if (sy0 < ybuf[sx0] - 1) continue;
+
+        bline(sx0, sy0, sx1, sy1);
+        if (sy1 > 0 && sy1 < BLUE_H) bpx(sx1, sy1);
+    }
+
     for (int i = 0; i < 6; i++) {
         int cx = imod((int)(scene_t * 6.0f) + i * 23, WIDTH + 18) - 9;
         int cy = 5 + (int)lroundf(sinf(scene_t * 0.35f + i * 0.9f) * 2.0f);
         bline(cx, cy, cx + 6, cy);
     }
 
-    vec3_t shadow = v3(plane.x, terrain_height(plane.x, plane.z) + 0.10f, plane.z);
-    int shadow_x, shadow_y;
-    if (project_world(shadow, cam, yaw, pitch, scene_scale, &shadow_x, &shadow_y)) {
-        float shadow_span = plane.y - shadow.y < 7.0f ? 2.0f : 1.0f;
-        bline(shadow_x - (int)shadow_span, shadow_y, shadow_x + (int)shadow_span, shadow_y);
-        if (shadow_span > 1.5f) bpx(shadow_x, shadow_y + 1);
+    {
+        float altitude = plane.y - terrain_height(plane.x, plane.z);
+        float shadow_len = clampf_local(1.3f + altitude * 0.55f, 1.8f, 5.8f);
+        float shadow_w = clampf_local(0.9f + altitude * 0.20f, 1.0f, 3.0f);
+        vec3_t shadow = v3(plane.x, terrain_height(plane.x, plane.z) + 0.10f, plane.z);
+        vec3_t shadow_nose = v3(shadow.x + sinf(plane_yaw) * shadow_len,
+                                terrain_height(shadow.x + sinf(plane_yaw) * shadow_len,
+                                               shadow.z + cosf(plane_yaw) * shadow_len) + 0.10f,
+                                shadow.z + cosf(plane_yaw) * shadow_len);
+        vec3_t shadow_tail = v3(shadow.x - sinf(plane_yaw) * shadow_len * 0.55f,
+                                terrain_height(shadow.x - sinf(plane_yaw) * shadow_len * 0.55f,
+                                               shadow.z - cosf(plane_yaw) * shadow_len * 0.55f) + 0.10f,
+                                shadow.z - cosf(plane_yaw) * shadow_len * 0.55f);
+        vec3_t shadow_left = v3(shadow.x - cosf(plane_yaw) * shadow_w,
+                                terrain_height(shadow.x - cosf(plane_yaw) * shadow_w,
+                                               shadow.z + sinf(plane_yaw) * shadow_w) + 0.10f,
+                                shadow.z + sinf(plane_yaw) * shadow_w);
+        vec3_t shadow_right = v3(shadow.x + cosf(plane_yaw) * shadow_w,
+                                 terrain_height(shadow.x + cosf(plane_yaw) * shadow_w,
+                                                shadow.z - sinf(plane_yaw) * shadow_w) + 0.10f,
+                                 shadow.z - sinf(plane_yaw) * shadow_w);
+
+        draw_3d_line(shadow_tail, shadow_nose, cam, yaw, pitch, scene_scale);
+        draw_3d_line(shadow_left, shadow_right, cam, yaw, pitch, scene_scale);
     }
 
     draw_wire_paper_plane(plane, plane_yaw, plane_pitch, plane_roll, 1.45f,
