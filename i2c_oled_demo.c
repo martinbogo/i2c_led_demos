@@ -759,22 +759,27 @@ static void draw_wire_ship(vec3_t pos, float yaw_l, float pitch_l, float roll_l,
 
 static void draw_wire_paper_plane(vec3_t pos, float yaw_l, float pitch_l, float roll_l, float scale_l,
                                   vec3_t cam, float yaw, float pitch, float scale) {
-    vec3_t nose = ship_tf(v3( 0.0f,  0.0f,  3.4f), pos, yaw_l, pitch_l, roll_l, scale_l);
-    vec3_t left = ship_tf(v3(-2.6f,  0.0f,  0.5f), pos, yaw_l, pitch_l, roll_l, scale_l);
-    vec3_t right= ship_tf(v3( 2.6f,  0.0f,  0.5f), pos, yaw_l, pitch_l, roll_l, scale_l);
-    vec3_t ridge= ship_tf(v3( 0.0f,  0.24f, 0.6f), pos, yaw_l, pitch_l, roll_l, scale_l);
-    vec3_t tail = ship_tf(v3( 0.0f,  0.0f, -2.2f), pos, yaw_l, pitch_l, roll_l, scale_l);
-    vec3_t fin  = ship_tf(v3( 0.0f,  0.72f,-1.0f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    vec3_t nose        = ship_tf(v3( 0.0f, 0.00f,  4.8f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    vec3_t left_tip    = ship_tf(v3(-4.0f, 0.26f, -0.1f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    vec3_t right_tip   = ship_tf(v3( 4.0f, 0.26f, -0.1f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    vec3_t left_trail  = ship_tf(v3(-1.2f, 0.06f, -3.2f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    vec3_t right_trail = ship_tf(v3( 1.2f, 0.06f, -3.2f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    vec3_t tail        = ship_tf(v3( 0.0f, 0.00f, -3.8f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    vec3_t ridge_front = ship_tf(v3( 0.0f, 0.42f,  1.4f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    vec3_t ridge_mid   = ship_tf(v3( 0.0f, 0.20f, -1.5f), pos, yaw_l, pitch_l, roll_l, scale_l);
 
-    draw_3d_line(nose, left,  cam, yaw, pitch, scale);
-    draw_3d_line(nose, right, cam, yaw, pitch, scale);
-    draw_3d_line(nose, tail,  cam, yaw, pitch, scale);
-    draw_3d_line(left, ridge, cam, yaw, pitch, scale);
-    draw_3d_line(right, ridge,cam, yaw, pitch, scale);
-    draw_3d_line(ridge, tail, cam, yaw, pitch, scale);
-    draw_3d_line(left, tail,  cam, yaw, pitch, scale);
-    draw_3d_line(right, tail, cam, yaw, pitch, scale);
-    draw_3d_line(tail, fin,   cam, yaw, pitch, scale);
+    draw_3d_line(nose, left_tip,     cam, yaw, pitch, scale);
+    draw_3d_line(nose, right_tip,    cam, yaw, pitch, scale);
+    draw_3d_line(left_tip, left_trail,  cam, yaw, pitch, scale);
+    draw_3d_line(right_tip, right_trail, cam, yaw, pitch, scale);
+    draw_3d_line(left_trail, tail,    cam, yaw, pitch, scale);
+    draw_3d_line(right_trail, tail,   cam, yaw, pitch, scale);
+
+    draw_3d_line(nose, ridge_front,   cam, yaw, pitch, scale);
+    draw_3d_line(ridge_front, ridge_mid, cam, yaw, pitch, scale);
+    draw_3d_line(ridge_mid, tail,     cam, yaw, pitch, scale);
+    draw_3d_line(ridge_front, left_trail,  cam, yaw, pitch, scale);
+    draw_3d_line(ridge_front, right_trail, cam, yaw, pitch, scale);
 }
 
 static void draw_scroller(const char *msg, float scene_t, int scene_idx) {
