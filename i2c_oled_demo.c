@@ -973,10 +973,10 @@ static void draw_scene_tank_wars(float scene_t) {
 static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
     int ybuf[WIDTH];
     float u = clampf_local(scene_t / SCENE_SECONDS, 0.0f, 1.0f);
-    float orbit = mixf_local(-0.5f * (float)M_PI, 0.5f * (float)M_PI, smoothstep_local(u));
-    float orbit_r = 11.5f + 0.8f * sinf(scene_t * 0.45f);
+    float orbit = mixf_local(-0.44f * (float)M_PI, 0.44f * (float)M_PI, smoothstep_local(u));
+    float orbit_r = 9.8f + 0.6f * sinf(scene_t * 0.35f);
     vec3_t plane = paper_plane_path(scene_t);
-    vec3_t plane_next = paper_plane_path(scene_t + 0.28f);
+    vec3_t plane_next = paper_plane_path(scene_t + 0.24f);
     vec3_t plane_delta = v3_sub(plane_next, plane);
     float plane_yaw = atan2f(plane_delta.x, plane_delta.z);
     float plane_pitch = atan2f(plane_delta.y,
@@ -984,16 +984,16 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
     float plane_roll = 0.28f * sinf(scene_t * 0.90f) - 0.16f * sinf(scene_t * 0.34f);
     vec3_t cam = v3_add(plane,
                         rot_y(v3(orbit_r * sinf(orbit),
-                                 2.0f + 0.40f * sinf(scene_t * 0.80f),
-                                 -2.4f - orbit_r * (0.30f + 0.70f * cosf(orbit))),
+                                 1.2f + 0.25f * sinf(scene_t * 0.70f),
+                                 -4.8f - orbit_r * (0.48f + 0.52f * cosf(orbit))),
                               plane_yaw));
-    vec3_t focus = v3_add(plane, rot_y(v3(0.0f, 0.15f, 0.8f), plane_yaw));
+    vec3_t focus = plane;
     vec3_t focus_delta = v3_sub(focus, cam);
-    float yaw = atan2f(focus_delta.x, focus_delta.z);
-    float pitch = -atan2f(cam.y - focus.y,
-                          sqrtf(focus_delta.x * focus_delta.x + focus_delta.z * focus_delta.z));
+    float yaw = -atan2f(focus_delta.x, focus_delta.z);
+    float pitch = atan2f(focus_delta.y,
+                         sqrtf(focus_delta.x * focus_delta.x + focus_delta.z * focus_delta.z));
     float cam_h = cam.y;
-    float horizon_y = 16.0f + pitch * 28.0f;
+    float horizon_y = 15.0f + pitch * 24.0f;
 
     for (int x = 0; x < WIDTH; x++) ybuf[x] = BLUE_H - 1;
 
@@ -1005,13 +1005,25 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
             float wz = cam.z + cosf(ray) * depth;
             float h = terrain_height(wx, wz);
             int sy = (int)lroundf(horizon_y + (cam_h - h) * 24.0f / depth);
+            int tex_seed = imod((int)floorf(wx * 0.45f) + (int)floorf(wz * 0.35f), 6);
+            int contour = fabsf(fractf_local((h + depth * 0.18f) * 0.35f) - 0.5f) < 0.10f;
             if (sy < 0) sy = 0;
             if (sy < ybuf[x]) {
-                for (int y = sy; y <= ybuf[x]; y++)
-                    shade_px(x, y, level, phase);
+                for (int y = sy; y <= ybuf[x]; y++) {
+                    int tex_level = level;
+                    if (((y + tex_seed) & 1) == 0 && tex_level > 1) tex_level--;
+                    if (depth > 16.0f && imod(y + x + tex_seed, 3) == 0 && tex_level > 1) tex_level--;
+                    if (contour && y <= sy + 1) tex_level = 4;
+                    shade_px(x, y, tex_level, phase);
+                }
                 ybuf[x] = sy;
             }
         }
+    }
+
+    for (int x = 1; x < WIDTH; x++) {
+        if (abs(ybuf[x] - ybuf[x - 1]) < 7)
+            bline(x - 1, ybuf[x - 1], x, ybuf[x]);
     }
 
     for (int i = 0; i < 6; i++) {
@@ -1020,8 +1032,8 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
         bline(cx, cy, cx + 6, cy);
     }
 
-    draw_wire_paper_plane(plane, plane_yaw, plane_pitch, plane_roll, 1.35f,
-                          cam, yaw, pitch, 88.0f);
+    draw_wire_paper_plane(plane, plane_yaw, plane_pitch, plane_roll, 1.20f,
+                          cam, yaw, pitch, 80.0f);
 }
 
 static void draw_scene_space_battle(float scene_t) {
