@@ -789,6 +789,7 @@ static vec3_t paper_plane_path(float scene_t) {
                    + 2.4f * bell_local(scene_t, 18.8f, 1.7f)
                    + loop_r * (1.0f - cosf(loop_a))
                    + 0.9f * bell_local(scene_t, 27.4f, 1.5f);
+    altitude *= 1.5f;
     float y = terrain_height(x, z) + altitude;
     return v3(x, y, z);
 }
