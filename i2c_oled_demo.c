@@ -759,27 +759,30 @@ static void draw_wire_ship(vec3_t pos, float yaw_l, float pitch_l, float roll_l,
 
 static void draw_wire_paper_plane(vec3_t pos, float yaw_l, float pitch_l, float roll_l, float scale_l,
                                   vec3_t cam, float yaw, float pitch, float scale) {
-    vec3_t nose        = ship_tf(v3( 0.0f, 0.00f,  4.8f), pos, yaw_l, pitch_l, roll_l, scale_l);
-    vec3_t left_tip    = ship_tf(v3(-4.0f, 0.26f, -0.1f), pos, yaw_l, pitch_l, roll_l, scale_l);
-    vec3_t right_tip   = ship_tf(v3( 4.0f, 0.26f, -0.1f), pos, yaw_l, pitch_l, roll_l, scale_l);
-    vec3_t left_trail  = ship_tf(v3(-1.2f, 0.06f, -3.2f), pos, yaw_l, pitch_l, roll_l, scale_l);
-    vec3_t right_trail = ship_tf(v3( 1.2f, 0.06f, -3.2f), pos, yaw_l, pitch_l, roll_l, scale_l);
-    vec3_t tail        = ship_tf(v3( 0.0f, 0.00f, -3.8f), pos, yaw_l, pitch_l, roll_l, scale_l);
-    vec3_t ridge_front = ship_tf(v3( 0.0f, 0.42f,  1.4f), pos, yaw_l, pitch_l, roll_l, scale_l);
-    vec3_t ridge_mid   = ship_tf(v3( 0.0f, 0.20f, -1.5f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    static const vec3_t verts[] = {
+        { 0.000f, -0.536f, -1.900f},
+        { 0.103f,  0.076f, -1.900f},
+        { 0.000f,  0.076f,  3.791f},
+        { 1.642f,  0.076f, -1.900f},
+        { 0.205f,  0.000f, -1.900f},
+        {-0.103f,  0.076f, -1.900f},
+        {-1.642f,  0.076f, -1.900f},
+        {-0.205f,  0.000f, -1.900f}
+    };
+    static const int edges[][2] = {
+        {0,1}, {1,2}, {0,2},
+        {1,3}, {2,3},
+        {3,4}, {2,4},
+        {5,0}, {2,5},
+        {6,5}, {2,6},
+        {2,7}, {6,7}
+    };
 
-    draw_3d_line(nose, left_tip,     cam, yaw, pitch, scale);
-    draw_3d_line(nose, right_tip,    cam, yaw, pitch, scale);
-    draw_3d_line(left_tip, left_trail,  cam, yaw, pitch, scale);
-    draw_3d_line(right_tip, right_trail, cam, yaw, pitch, scale);
-    draw_3d_line(left_trail, tail,    cam, yaw, pitch, scale);
-    draw_3d_line(right_trail, tail,   cam, yaw, pitch, scale);
-
-    draw_3d_line(nose, ridge_front,   cam, yaw, pitch, scale);
-    draw_3d_line(ridge_front, ridge_mid, cam, yaw, pitch, scale);
-    draw_3d_line(ridge_mid, tail,     cam, yaw, pitch, scale);
-    draw_3d_line(ridge_front, left_trail,  cam, yaw, pitch, scale);
-    draw_3d_line(ridge_front, right_trail, cam, yaw, pitch, scale);
+    for (unsigned i = 0; i < sizeof(edges) / sizeof(edges[0]); i++) {
+        draw_3d_line(ship_tf(verts[edges[i][0]], pos, yaw_l, pitch_l, roll_l, scale_l),
+                     ship_tf(verts[edges[i][1]], pos, yaw_l, pitch_l, roll_l, scale_l),
+                     cam, yaw, pitch, scale);
+    }
 }
 
 static void draw_scroller(const char *msg, float scene_t, int scene_idx) {
@@ -1037,7 +1040,7 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
         bline(cx, cy, cx + 6, cy);
     }
 
-    draw_wire_paper_plane(plane, plane_yaw, plane_pitch, plane_roll, 1.20f,
+    draw_wire_paper_plane(plane, plane_yaw, plane_pitch, plane_roll, 1.60f,
                           cam, yaw, pitch, 80.0f);
 }
 
