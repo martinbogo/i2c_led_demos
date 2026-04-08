@@ -465,8 +465,20 @@ static float smoothstep_local(float t) {
     return t * t * (3.0f - 2.0f * t);
 }
 
+static float bell_local(float t, float center, float width) {
+    float x = (t - center) / width;
+    return expf(-x * x);
+}
+
 static float fractf_local(float v) {
     return v - floorf(v);
+}
+
+static float angle_diff_local(float a, float b) {
+    float d = a - b;
+    while (d > (float)M_PI) d -= 2.0f * (float)M_PI;
+    while (d < -(float)M_PI) d += 2.0f * (float)M_PI;
+    return d;
 }
 
 static float hash01(int n) {
@@ -640,13 +652,56 @@ static float terrain_height(float x, float z) {
          + 1.7f * cosf((x - z) * 0.07f);
 }
 
+static float paper_plane_loop_u(float scene_t) {
+    return clampf_local((scene_t - 19.5f) / 6.6f, 0.0f, 1.0f);
+}
+
 static vec3_t paper_plane_path(float scene_t) {
-    float x = 7.5f * sinf(scene_t * 0.22f) + 2.6f * sinf(scene_t * 0.58f);
-    float z = 18.0f + scene_t * 2.6f;
-    float y = terrain_height(x, z) + 6.5f
-            + 0.6f * sinf(scene_t * 1.15f)
-            + 0.35f * cosf(scene_t * 0.52f);
+    float loop_u = paper_plane_loop_u(scene_t);
+    float loop_a = loop_u * 2.0f * (float)M_PI;
+    float loop_r = 2.35f;
+    float x = 5.8f * sinf(scene_t * 0.21f + 0.2f)
+            + 2.4f * sinf(scene_t * 0.63f - 0.4f)
+            + 1.8f * bell_local(scene_t, 6.0f, 2.0f)
+            - 2.6f * bell_local(scene_t, 12.0f, 2.4f)
+            + 2.2f * bell_local(scene_t, 17.0f, 1.8f)
+            - 1.5f * bell_local(scene_t, 26.8f, 1.6f);
+    float z = 16.0f + scene_t * 2.55f
+            + 0.9f * sinf(scene_t * 0.22f)
+            + loop_r * sinf(loop_a);
+    float altitude = 6.6f
+                   + 0.45f * sinf(scene_t * 1.05f)
+                   + 0.30f * cosf(scene_t * 0.48f)
+                   - 2.2f * bell_local(scene_t, 6.5f, 1.7f)
+                   + 3.1f * bell_local(scene_t, 11.4f, 2.3f)
+                   - 1.6f * bell_local(scene_t, 16.3f, 1.4f)
+                   + 2.4f * bell_local(scene_t, 18.8f, 1.7f)
+                   + loop_r * (1.0f - cosf(loop_a))
+                   + 0.9f * bell_local(scene_t, 27.4f, 1.5f);
+    float y = terrain_height(x, z) + altitude;
     return v3(x, y, z);
+}
+
+static void paper_plane_attitude(float scene_t, float *yaw, float *pitch, float *roll) {
+    const float dt = 0.12f;
+    vec3_t prev = paper_plane_path(scene_t - dt);
+    vec3_t curr = paper_plane_path(scene_t);
+    vec3_t next = paper_plane_path(scene_t + dt);
+    vec3_t vel = v3_sub(next, prev);
+    vec3_t prev_vel = v3_sub(curr, prev);
+    vec3_t next_vel = v3_sub(next, curr);
+    float horiz = sqrtf(vel.x * vel.x + vel.z * vel.z);
+    float yaw_prev = atan2f(prev_vel.x, prev_vel.z);
+    float yaw_next = atan2f(next_vel.x, next_vel.z);
+    float yaw_rate = angle_diff_local(yaw_next, yaw_prev) / (2.0f * dt);
+    float loop_bank_relax = sinf(paper_plane_loop_u(scene_t) * (float)M_PI);
+
+    if (horiz < 0.001f) horiz = 0.001f;
+
+    *yaw = atan2f(vel.x, vel.z);
+    *pitch = atan2f(vel.y, horiz);
+    *roll = clampf_local(-yaw_rate * 0.85f, -0.95f, 0.95f) * (1.0f - 0.75f * loop_bank_relax)
+          + 0.10f * sinf(scene_t * 1.7f) * (1.0f - loop_bank_relax);
 }
 
 static vec3_t tank_tf(vec3_t p, vec3_t pos, float yaw) {
@@ -984,12 +1039,8 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
     float orbit = mixf_local(-0.44f * (float)M_PI, 0.44f * (float)M_PI, smoothstep_local(u));
     float orbit_r = 9.8f + 0.6f * sinf(scene_t * 0.35f);
     vec3_t plane = paper_plane_path(scene_t);
-    vec3_t plane_next = paper_plane_path(scene_t + 0.24f);
-    vec3_t plane_delta = v3_sub(plane_next, plane);
-    float plane_yaw = atan2f(plane_delta.x, plane_delta.z);
-    float plane_pitch = atan2f(plane_delta.y,
-                               sqrtf(plane_delta.x * plane_delta.x + plane_delta.z * plane_delta.z));
-    float plane_roll = 0.28f * sinf(scene_t * 0.90f) - 0.16f * sinf(scene_t * 0.34f);
+    float plane_yaw, plane_pitch, plane_roll;
+    paper_plane_attitude(scene_t, &plane_yaw, &plane_pitch, &plane_roll);
     vec3_t cam = v3_add(plane,
                         rot_y(v3(orbit_r * sinf(orbit),
                                  1.2f + 0.25f * sinf(scene_t * 0.70f),
