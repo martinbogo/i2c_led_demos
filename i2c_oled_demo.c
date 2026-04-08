@@ -666,6 +666,7 @@ static void draw_hill_tree(vec3_t base, float height, float lean,
     if (!project_world(base, cam, yaw, pitch, scale, &bx, &by)) return;
     if (!project_world(top, cam, yaw, pitch, scale, &tx, &ty)) return;
     if (!hill_surface_visible(bx, by, ybuf)) return;
+    if (abs(by - ty) < 3) return;
 
     int crown = abs(by - ty) / 2 + 1;
     if (crown < 1) crown = 1;
@@ -701,6 +702,25 @@ static void draw_hill_rock(vec3_t base, float size, float skew,
     if (!project_world(right, cam, yaw, pitch, scale, &rx, &ry)) return;
     if (!project_world(peak, cam, yaw, pitch, scale, &px, &py)) return;
     if (!hill_surface_visible(bx, by, ybuf)) return;
+    {
+        int min_x = lx;
+        int max_x = lx;
+        int min_y = ly;
+        int max_y = ly;
+        if (rx < min_x) min_x = rx;
+        if (px < min_x) min_x = px;
+        if (bx < min_x) min_x = bx;
+        if (rx > max_x) max_x = rx;
+        if (px > max_x) max_x = px;
+        if (bx > max_x) max_x = bx;
+        if (ry < min_y) min_y = ry;
+        if (py < min_y) min_y = py;
+        if (by < min_y) min_y = by;
+        if (ry > max_y) max_y = ry;
+        if (py > max_y) max_y = py;
+        if (by > max_y) max_y = by;
+        if (max_x - min_x < 2 && max_y - min_y < 2) return;
+    }
 
     bline(lx, ly, px, py);
     bline(px, py, rx, ry);
@@ -1249,6 +1269,7 @@ static void draw_scene_tank_wars(float scene_t) {
 
 static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
     int ybuf[WIDTH];
+    unsigned terrain_phase = 0;
     vec3_t plane = paper_plane_path(scene_t);
     float plane_yaw, plane_pitch, plane_roll;
     paper_plane_attitude(scene_t, &plane_yaw, &plane_pitch, &plane_roll);
@@ -1313,7 +1334,7 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
                     if (ridge && imod(x - y + tex_seed, 4) == 0 && tex_level < 4) tex_level++;
                     if (contour && y <= sy + 1) tex_level = 4;
                     tex_level = (int)clampf_local((float)tex_level, 1.0f, 4.0f);
-                    shade_px(x, y, tex_level, phase);
+                    shade_px(x, y, tex_level, terrain_phase);
                 }
                 ybuf[x] = sy;
             }
@@ -1434,8 +1455,12 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
         if (fabsf(wx - plane.x) < 4.0f && fabsf(wz - plane.z) < 6.0f) continue;
         if (sy0 < ybuf[sx0] - 1) continue;
 
-        bline(sx0, sy0, sx1, sy1);
-        if (sy1 > 0 && sy1 < BLUE_H) bpx(sx1, sy1);
+        if (abs(sx1 - sx0) <= 1 && abs(sy1 - sy0) <= 3) {
+            bpx(sx0, sy0);
+        } else {
+            bline(sx0, sy0, sx1, sy1);
+            if (sy1 > 0 && sy1 < BLUE_H) bpx(sx1, sy1);
+        }
     }
 
     for (int i = 0; i < 6; i++) {
