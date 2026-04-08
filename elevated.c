@@ -35,11 +35,15 @@
 #define HEIGHT            64
 #define PAGES             (HEIGHT / 8)
 #define ADDR              0x3C
-#define TARGET_FPS        15
+#define MOTION_FPS        15
+#define PDM_PHASES        3
+#define PDM_SUBFRAME_HZ   90
+#define SUBFRAMES_PER_MOTION_FRAME (PDM_SUBFRAME_HZ / MOTION_FPS)
 #define YELLOW_H          16
 #define BLUE_Y            16
 #define BLUE_H            48
 #define BLUE_START_PAGE   (BLUE_Y / 8)
+#define BLUE_PLANE_BYTES  (WIDTH * (BLUE_H / 8))
 #define I2C_CHUNK         255
 #define SAMPLE_RATE       44100.0f
 #define MAX_NOTE_SAMPLES  5210.0f
@@ -79,9 +83,22 @@ typedef struct {
     vec3_t sun_dir;
 } ElevatedParams;
 
+typedef struct {
+    float scene_t;
+    ElevatedParams params;
+    uint8_t blue_luma[WIDTH * BLUE_H];
+    int ybuf[WIDTH];
+    float horizon_y;
+    int sun_x;
+    int sun_y;
+} ElevatedFrameCache;
+
 static int i2c_fd;
 static uint8_t fb[WIDTH * PAGES];
 static volatile int running = 1;
+static ElevatedFrameCache frame_cache;
+
+static void bpx(int x, int y);
 
 static const uint8_t font5x7[][5] = {
     {0x00,0x00,0x00,0x00,0x00},{0x00,0x00,0x5F,0x00,0x00},
@@ -132,6 +149,42 @@ static const uint8_t font5x7[][5] = {
     {0x44,0x64,0x54,0x4C,0x44},{0x00,0x08,0x36,0x41,0x00},
     {0x00,0x00,0x7F,0x00,0x00},{0x00,0x41,0x36,0x08,0x00},
     {0x08,0x08,0x2A,0x1C,0x08},
+};
+
+static const uint8_t bayer8x8[8][8] = {
+    { 0, 48, 12, 60,  3, 51, 15, 63 },
+    {32, 16, 44, 28, 35, 19, 47, 31 },
+    { 8, 56,  4, 52, 11, 59,  7, 55 },
+    {40, 24, 36, 20, 43, 27, 39, 23 },
+    { 2, 50, 14, 62,  1, 49, 13, 61 },
+    {34, 18, 46, 30, 33, 17, 45, 29 },
+    {10, 58,  6, 54,  9, 57,  5, 53 },
+    {42, 26, 38, 22, 41, 25, 37, 21 },
+};
+
+static const uint8_t temporal_order[PDM_PHASES] = { 0, 2, 1 };
+
+/*
+ * Calibrated transfer curve from oled_gamma_calibration.txt, used by the
+ * scene-10 PDM video pipeline via convert_pdm_48.py.
+ */
+static const uint8_t oled_gray_lut[256] = {
+      0,   1,   1,   2,   2,   3,   4,   4,   5,   5,   6,   6,   7,   8,   8,   9,
+      9,  10,  11,  11,  12,  13,  13,  14,  15,  15,  16,  16,  17,  18,  18,  19,
+     20,  20,  21,  22,  22,  23,  24,  24,  25,  26,  26,  27,  27,  28,  29,  29,
+     30,  31,  31,  32,  33,  33,  34,  35,  36,  36,  37,  38,  38,  39,  40,  40,
+     41,  42,  43,  43,  44,  45,  45,  46,  47,  48,  48,  49,  50,  50,  51,  52,
+     52,  53,  54,  55,  55,  56,  57,  58,  58,  59,  60,  61,  61,  62,  63,  64,
+     64,  65,  66,  67,  67,  68,  69,  70,  71,  71,  72,  73,  74,  74,  75,  76,
+     77,  77,  78,  79,  80,  80,  81,  82,  83,  84,  84,  85,  86,  87,  87,  88,
+     89,  90,  90,  91,  92,  93,  93,  94,  95,  96,  97,  97,  98,  99, 100, 100,
+    101, 102, 103, 103, 104, 105, 106, 106, 107, 108, 109, 110, 110, 111, 112, 113,
+    114, 115, 115, 116, 117, 118, 119, 120, 120, 121, 122, 123, 124, 124, 125, 126,
+    127, 128, 129, 129, 130, 131, 132, 133, 134, 134, 135, 136, 137, 138, 138, 139,
+    140, 141, 142, 143, 143, 144, 145, 146, 147, 148, 148, 149, 150, 151, 152, 152,
+    153, 154, 155, 156, 157, 157, 158, 159, 160, 161, 162, 162, 163, 164, 165, 166,
+    167, 168, 168, 169, 170, 171, 172, 173, 174, 175, 175, 176, 177, 178, 179, 183,
+    188, 192, 197, 201, 206, 210, 215, 219, 224, 228, 233, 237, 242, 246, 251, 255
 };
 
 #define TRACK_END {512, 0.0f, 0}
@@ -252,13 +305,28 @@ static float hash01(int n) {
     return fractf_local(s);
 }
 
-static float quantize_luma(float luma) {
-    luma = clampf_local(luma, 0.0f, 1.0f);
-    return floorf(luma * 6.0f + 0.5f) / 6.0f;
-}
-
 static uint8_t luma_byte(float luma) {
     return (uint8_t)lroundf(clampf_local(luma, 0.0f, 1.0f) * 255.0f);
+}
+
+static int pdm_on_level(int x, int y, int level, unsigned phase) {
+    int scaled = level * (PDM_PHASES * 64 + 1) / 256;
+    int bayer = bayer8x8[y & 7][x & 7];
+    unsigned rotate = (unsigned)((x * 3 + y * 5) % PDM_PHASES);
+    unsigned rank = temporal_order[(phase + rotate) % PDM_PHASES];
+    return scaled > (int)(rank * 64u) + bayer;
+}
+
+static void draw_blue_luma_pdm(const uint8_t *terrain_luma, unsigned phase) {
+    unsigned pdm_phase = phase % PDM_PHASES;
+
+    for (int y = 0; y < BLUE_H; y++) {
+        for (int x = 0; x < WIDTH; x++) {
+            int idx = y * WIDTH + x;
+            int level = oled_gray_lut[terrain_luma[idx]];
+            if (pdm_on_level(x, y, level, pdm_phase)) bpx(x, y);
+        }
+    }
 }
 
 static vec3_t v3(float x, float y, float z) {
@@ -522,8 +590,7 @@ static void sample_params(float scene_t, ElevatedParams *p) {
 static float graded_luma(float luma, const ElevatedParams *p) {
     float contrast = clampf_local(p->contrast, 0.55f, 1.75f);
     float brightness = p->brightness * 0.22f;
-    luma = (luma - 0.5f) * contrast + 0.5f + brightness;
-    return quantize_luma(luma);
+    return clampf_local((luma - 0.5f) * contrast + 0.5f + brightness, 0.0f, 1.0f);
 }
 
 static void elevated_terrain_sample(float x, float z, const ElevatedParams *p,
@@ -627,58 +694,18 @@ static void prefill_sky(uint8_t *luma, float horizon_y, int sun_x, int sun_y,
     }
 }
 
-static void draw_blue_luma_floyd_steinberg(const uint8_t *terrain_luma) {
-    float work[WIDTH * BLUE_H];
-
-    for (int i = 0; i < WIDTH * BLUE_H; i++) work[i] = (float)terrain_luma[i];
-
-    for (int y = 0; y < BLUE_H; y++) {
-        int ltr = !(y & 1);
-        if (ltr) {
-            for (int x = 0; x < WIDTH; x++) {
-                int idx = y * WIDTH + x;
-                float old_px = work[idx];
-                float new_px = old_px >= 128.0f ? 255.0f : 0.0f;
-                float err = old_px - new_px;
-
-                if (new_px > 0.0f) bpx(x, y);
-                if (x + 1 < WIDTH) work[idx + 1] += err * (7.0f / 16.0f);
-                if (y + 1 < BLUE_H) {
-                    if (x > 0) work[idx + WIDTH - 1] += err * (3.0f / 16.0f);
-                    work[idx + WIDTH] += err * (5.0f / 16.0f);
-                    if (x + 1 < WIDTH) work[idx + WIDTH + 1] += err * (1.0f / 16.0f);
-                }
-            }
-        } else {
-            for (int x = WIDTH - 1; x >= 0; x--) {
-                int idx = y * WIDTH + x;
-                float old_px = work[idx];
-                float new_px = old_px >= 128.0f ? 255.0f : 0.0f;
-                float err = old_px - new_px;
-
-                if (new_px > 0.0f) bpx(x, y);
-                if (x > 0) work[idx - 1] += err * (7.0f / 16.0f);
-                if (y + 1 < BLUE_H) {
-                    if (x + 1 < WIDTH) work[idx + WIDTH + 1] += err * (3.0f / 16.0f);
-                    work[idx + WIDTH] += err * (5.0f / 16.0f);
-                    if (x > 0) work[idx + WIDTH - 1] += err * (1.0f / 16.0f);
-                }
-            }
-        }
-    }
-}
-
-static void render_elevated_scene(float scene_t, unsigned phase, const ElevatedParams *p) {
-    uint8_t luma[WIDTH * BLUE_H];
-    int ybuf[WIDTH];
+static void render_elevated_luma(ElevatedFrameCache *cache) {
+    const ElevatedParams *p = &cache->params;
     vec3_t cam, focus;
     float yaw, pitch, proj_scale;
     float horizon_y;
     int sun_x = WIDTH / 2;
     int sun_y = 4;
+    int sparkle_phase = (int)floorf(p->time * 14.0f);
 
     build_camera(p, &cam, &focus, &yaw, &pitch, &proj_scale);
     horizon_y = 15.0f + pitch * 20.0f;
+    cache->horizon_y = horizon_y;
 
     if (project_world(v3_add(cam, v3_scale(p->sun_dir, 110.0f)), cam, yaw, pitch, proj_scale, &sun_x, &sun_y)) {
         if (sun_x < -20) sun_x = -20;
@@ -688,8 +715,11 @@ static void render_elevated_scene(float scene_t, unsigned phase, const ElevatedP
         sun_y = (int)lroundf(horizon_y * 0.35f);
     }
 
-    prefill_sky(luma, horizon_y, sun_x, sun_y, p);
-    for (int x = 0; x < WIDTH; x++) ybuf[x] = BLUE_H - 1;
+    cache->sun_x = sun_x;
+    cache->sun_y = sun_y;
+
+    prefill_sky(cache->blue_luma, horizon_y, sun_x, sun_y, p);
+    for (int x = 0; x < WIDTH; x++) cache->ybuf[x] = BLUE_H - 1;
 
     for (float depth = 70.0f; depth > 1.0f; depth -= 0.50f) {
         for (int x = 0; x < WIDTH; x++) {
@@ -709,9 +739,9 @@ static void render_elevated_scene(float scene_t, unsigned phase, const ElevatedP
             sy = (int)lroundf(horizon_y + (cam.y - surface_y) * proj_scale / depth);
             if (sy < 0) sy = 0;
 
-            if (sy < ybuf[x]) {
+            if (sy < cache->ybuf[x]) {
                 int shell_rows = depth < 10.0f ? 3 : depth < 22.0f ? 2 : 1;
-                for (int y = sy; y <= ybuf[x]; y++) {
+                for (int y = sy; y <= cache->ybuf[x]; y++) {
                     int idx = y * WIDTH + x;
                     int top_offset = y - sy;
                     float shell_t = 1.0f - clampf_local((float)top_offset / (float)shell_rows, 0.0f, 1.0f);
@@ -751,28 +781,30 @@ static void render_elevated_scene(float scene_t, unsigned phase, const ElevatedP
                         water_top = mixf_local(water_top, 0.62f, p->snow * (0.35f + 0.35f * submerged));
                         pixel_luma = mixf_local(water_top, water_base * 0.64f, face_t);
                         if (top_offset == 0) pixel_luma += 0.06f;
-                        if (((x + y + (int)phase) & 7) == 0) pixel_luma += 0.03f;
+                        if (((x + y + sparkle_phase) & 7) == 0) pixel_luma += 0.03f;
                     }
 
-                    luma[idx] = luma_byte(graded_luma(pixel_luma, p));
+                    cache->blue_luma[idx] = luma_byte(graded_luma(pixel_luma, p));
                 }
 
-                ybuf[x] = sy;
+                cache->ybuf[x] = sy;
             }
         }
     }
+}
 
-    draw_blue_luma_floyd_steinberg(luma);
-
+static void draw_elevated_overlays(const ElevatedFrameCache *cache) {
     for (int x = 1; x < WIDTH; x++) {
-        if (abs(ybuf[x] - ybuf[x - 1]) < 7 &&
-            (ybuf[x] > (int)horizon_y + 1 || ybuf[x - 1] > (int)horizon_y + 1)) {
-            bline(x - 1, ybuf[x - 1], x, ybuf[x]);
+        if (abs(cache->ybuf[x] - cache->ybuf[x - 1]) < 7 &&
+            (cache->ybuf[x] > (int)cache->horizon_y + 1 || cache->ybuf[x - 1] > (int)cache->horizon_y + 1)) {
+            bline(x - 1, cache->ybuf[x - 1], x, cache->ybuf[x]);
         }
     }
 
-    if (sun_y >= 1 && sun_y < (int)horizon_y - 1 && sun_x >= 1 && sun_x < WIDTH - 1)
-        bfill_circle(sun_x, sun_y, p->snow > 0.6f ? 1 : 2);
+    if (cache->sun_y >= 1 && cache->sun_y < (int)cache->horizon_y - 1 &&
+        cache->sun_x >= 1 && cache->sun_x < WIDTH - 1) {
+        bfill_circle(cache->sun_x, cache->sun_y, cache->params.snow > 0.6f ? 1 : 2);
+    }
 }
 
 static void draw_header(float scene_t, const ElevatedParams *p) {
@@ -795,12 +827,22 @@ static void draw_header(float scene_t, const ElevatedParams *p) {
     }
 }
 
-static void render_frame(float scene_t, unsigned phase) {
-    ElevatedParams params;
-    memset(fb, 0, sizeof(fb));
-    sample_params(scene_t, &params);
-    draw_header(scene_t, &params);
-    render_elevated_scene(scene_t, phase, &params);
+static void prepare_frame_cache(float scene_t, ElevatedFrameCache *cache) {
+    cache->scene_t = scene_t;
+    sample_params(scene_t, &cache->params);
+    render_elevated_luma(cache);
+}
+
+static void draw_cached_frame(const ElevatedFrameCache *cache, unsigned phase, int full_refresh) {
+    if (full_refresh) {
+        memset(fb, 0, sizeof(fb));
+        draw_header(cache->scene_t, &cache->params);
+    } else {
+        memset(fb + WIDTH * BLUE_START_PAGE, 0, BLUE_PLANE_BYTES);
+    }
+
+    draw_blue_luma_pdm(cache->blue_luma, phase);
+    draw_elevated_overlays(cache);
 }
 
 static int write_pgm(const char *path) {
@@ -830,7 +872,6 @@ int main(int argc, char *argv[]) {
     int daemonize = 0;
     float start_time = 0.0f;
     const char *dump_frame_path = NULL;
-    unsigned phase = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0) {
@@ -860,7 +901,9 @@ int main(int argc, char *argv[]) {
     if (start_time < 0.0f) start_time += DEMO_SECONDS;
 
     if (dump_frame_path) {
-        render_frame(start_time, (unsigned)lroundf(start_time * TARGET_FPS));
+        unsigned subframe_tick = (unsigned)floorf(start_time * PDM_SUBFRAME_HZ);
+        prepare_frame_cache(start_time, &frame_cache);
+        draw_cached_frame(&frame_cache, subframe_tick % PDM_PHASES, 1);
         return write_pgm(dump_frame_path) ? 0 : 1;
     }
 
@@ -885,9 +928,10 @@ int main(int argc, char *argv[]) {
     signal(SIGTERM, stop);
 
     {
-        long frame_ns = 1000000000L / TARGET_FPS;
+        long frame_ns = 1000000000L / PDM_SUBFRAME_HZ;
         struct timespec next, prev;
         float sim_t = start_time;
+        unsigned last_motion_tick = (unsigned)-1;
 
         clock_gettime(CLOCK_MONOTONIC, &next);
         clock_gettime(CLOCK_MONOTONIC, &prev);
@@ -895,6 +939,11 @@ int main(int argc, char *argv[]) {
         while (running) {
             struct timespec now;
             float dt;
+            unsigned subframe_tick;
+            unsigned motion_tick;
+            unsigned phase;
+            int full_refresh;
+
             clock_gettime(CLOCK_MONOTONIC, &now);
             dt = (float)(now.tv_sec - prev.tv_sec) + (float)(now.tv_nsec - prev.tv_nsec) / 1e9f;
             if (dt > 1.0f) dt = 1.0f;
@@ -902,8 +951,18 @@ int main(int argc, char *argv[]) {
             sim_t += dt;
             if (sim_t >= DEMO_SECONDS) sim_t = fmodf(sim_t, DEMO_SECONDS);
 
-            render_frame(sim_t, phase++);
-            flush();
+            subframe_tick = (unsigned)floorf(sim_t * PDM_SUBFRAME_HZ);
+            motion_tick = subframe_tick / SUBFRAMES_PER_MOTION_FRAME;
+            phase = subframe_tick % PDM_PHASES;
+            full_refresh = motion_tick != last_motion_tick;
+
+            if (full_refresh) prepare_frame_cache(sim_t, &frame_cache);
+            draw_cached_frame(&frame_cache, phase, full_refresh);
+
+            if (full_refresh) flush();
+            else flush_pages(BLUE_START_PAGE, PAGES - 1);
+
+            last_motion_tick = motion_tick;
 
             next.tv_nsec += frame_ns;
             if (next.tv_nsec >= 1000000000L) {
