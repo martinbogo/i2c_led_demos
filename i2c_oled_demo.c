@@ -640,6 +640,15 @@ static float terrain_height(float x, float z) {
          + 1.7f * cosf((x - z) * 0.07f);
 }
 
+static vec3_t paper_plane_path(float scene_t) {
+    float x = 7.5f * sinf(scene_t * 0.22f) + 2.6f * sinf(scene_t * 0.58f);
+    float z = 18.0f + scene_t * 2.6f;
+    float y = terrain_height(x, z) + 6.5f
+            + 0.6f * sinf(scene_t * 1.15f)
+            + 0.35f * cosf(scene_t * 0.52f);
+    return v3(x, y, z);
+}
+
 static vec3_t tank_tf(vec3_t p, vec3_t pos, float yaw) {
     return v3_add(rot_y(p, yaw), pos);
 }
@@ -746,6 +755,25 @@ static void draw_wire_ship(vec3_t pos, float yaw_l, float pitch_l, float roll_l,
     draw_3d_line(right, top,  cam, yaw, pitch, scale);
     draw_3d_line(top, tail,   cam, yaw, pitch, scale);
     draw_3d_line(bot, tail,   cam, yaw, pitch, scale);
+}
+
+static void draw_wire_paper_plane(vec3_t pos, float yaw_l, float pitch_l, float roll_l, float scale_l,
+                                  vec3_t cam, float yaw, float pitch, float scale) {
+    vec3_t nose = ship_tf(v3( 0.0f,  0.0f,  3.0f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    vec3_t left = ship_tf(v3(-2.0f,  0.0f,  0.4f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    vec3_t right= ship_tf(v3( 2.0f,  0.0f,  0.4f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    vec3_t ridge= ship_tf(v3( 0.0f,  0.18f, 0.4f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    vec3_t tail = ship_tf(v3( 0.0f,  0.0f, -1.8f), pos, yaw_l, pitch_l, roll_l, scale_l);
+    vec3_t fin  = ship_tf(v3( 0.0f,  0.55f,-0.9f), pos, yaw_l, pitch_l, roll_l, scale_l);
+
+    draw_3d_line(nose, left,  cam, yaw, pitch, scale);
+    draw_3d_line(nose, right, cam, yaw, pitch, scale);
+    draw_3d_line(left, ridge, cam, yaw, pitch, scale);
+    draw_3d_line(right, ridge,cam, yaw, pitch, scale);
+    draw_3d_line(ridge, tail, cam, yaw, pitch, scale);
+    draw_3d_line(left, tail,  cam, yaw, pitch, scale);
+    draw_3d_line(right, tail, cam, yaw, pitch, scale);
+    draw_3d_line(tail, fin,   cam, yaw, pitch, scale);
 }
 
 static void draw_scroller(const char *msg, float scene_t, int scene_idx) {
@@ -943,22 +971,39 @@ static void draw_scene_tank_wars(float scene_t) {
 
 static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
     int ybuf[WIDTH];
-    float cam_x = scene_t * 0.9f + 12.0f * sinf(scene_t * 0.35f);
-    float cam_z = scene_t * 2.0f + 6.0f * cosf(scene_t * 0.18f);
-    float yaw = 0.05f + 0.85f * sinf(scene_t * 0.27f)
-              + 0.12f * cosf(scene_t * 0.71f);
-    float cam_h = 9.6f + 1.1f * sinf(scene_t * 0.48f);
+    float u = clampf_local(scene_t / SCENE_SECONDS, 0.0f, 1.0f);
+    float orbit = mixf_local(-0.5f * (float)M_PI, 0.5f * (float)M_PI, smoothstep_local(u));
+    float orbit_r = 9.0f + 0.8f * sinf(scene_t * 0.45f);
+    vec3_t plane = paper_plane_path(scene_t);
+    vec3_t plane_next = paper_plane_path(scene_t + 0.35f);
+    vec3_t plane_delta = v3_sub(plane_next, plane);
+    float plane_yaw = atan2f(plane_delta.x, plane_delta.z);
+    float plane_pitch = atan2f(plane_delta.y,
+                               sqrtf(plane_delta.x * plane_delta.x + plane_delta.z * plane_delta.z));
+    float plane_roll = 0.28f * sinf(scene_t * 0.90f) - 0.16f * sinf(scene_t * 0.34f);
+    vec3_t cam = v3_add(plane,
+                        rot_y(v3(orbit_r * sinf(orbit),
+                                 1.0f + 0.30f * sinf(scene_t * 0.80f),
+                                 -orbit_r * cosf(orbit)),
+                              plane_yaw));
+    vec3_t focus = v3_add(plane, rot_y(v3(0.0f, 0.10f, 1.4f), plane_yaw));
+    vec3_t focus_delta = v3_sub(focus, cam);
+    float yaw = atan2f(focus_delta.x, focus_delta.z);
+    float pitch = -atan2f(cam.y - focus.y,
+                          sqrtf(focus_delta.x * focus_delta.x + focus_delta.z * focus_delta.z));
+    float cam_h = cam.y;
+    float horizon_y = 17.0f + pitch * 32.0f;
 
     for (int x = 0; x < WIDTH; x++) ybuf[x] = BLUE_H - 1;
 
-    for (float depth = 46.0f; depth > 1.0f; depth -= 0.55f) {
-        int level = depth < 8.0f ? 4 : depth < 16.0f ? 3 : depth < 24.0f ? 2 : 1;
+    for (float depth = 58.0f; depth > 1.0f; depth -= 0.45f) {
+        int level = depth < 7.0f ? 4 : depth < 15.0f ? 3 : depth < 28.0f ? 2 : 1;
         for (int x = 0; x < WIDTH; x++) {
-            float ray = yaw + (((float)x - WIDTH * 0.5f) / 96.0f);
-            float wx = cam_x + sinf(ray) * depth;
-            float wz = cam_z + cosf(ray) * depth;
+            float ray = yaw + (((float)x - WIDTH * 0.5f) / 84.0f);
+            float wx = cam.x + sinf(ray) * depth;
+            float wz = cam.z + cosf(ray) * depth;
             float h = terrain_height(wx, wz);
-            int sy = 17 + (int)lroundf((cam_h - h) * 22.0f / depth);
+            int sy = (int)lroundf(horizon_y + (cam_h - h) * 24.0f / depth);
             if (sy < 0) sy = 0;
             if (sy < ybuf[x]) {
                 for (int y = sy; y <= ybuf[x]; y++)
@@ -968,19 +1013,14 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
         }
     }
 
-    for (int x = 0; x < WIDTH; x += 11) {
-        int cy = 9 + (int)lroundf(sinf(scene_t * 0.5f + x * 0.11f) * 1.5f);
-        bpx(x, cy);
-        bpx(x + 1, cy);
+    for (int i = 0; i < 6; i++) {
+        int cx = imod((int)(scene_t * 6.0f) + i * 23, WIDTH + 18) - 9;
+        int cy = 5 + (int)lroundf(sinf(scene_t * 0.35f + i * 0.9f) * 2.0f);
+        bline(cx, cy, cx + 6, cy);
     }
 
-    int ax = 92 + (int)lroundf(cosf(scene_t * 1.8f) * 5.0f);
-    int ay = 31 + (int)lroundf(sinf(scene_t * 2.4f) * 3.0f);
-    bline(ax - 13, ay, ax + 8, ay - 3);
-    bline(ax - 13, ay, ax + 2, ay + 5);
-    bline(ax + 8, ay - 3, ax + 2, ay + 5);
-    bline(ax - 4, ay + 1, ax + 2, ay + 2);
-    bline(ax - 11, ay, ax - 16, ay - 2);
+    draw_wire_paper_plane(plane, plane_yaw, plane_pitch, plane_roll, 0.95f,
+                          cam, yaw, pitch, 76.0f);
 }
 
 static void draw_scene_space_battle(float scene_t) {
