@@ -729,6 +729,25 @@ static void fill_rect(int x0, int y0, int x1, int y1) {
             px(x, y);
 }
 
+static void draw_hline(int x0, int x1, int y) {
+    if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
+    for (int x = x0; x <= x1; x++)
+        px(x, y);
+}
+
+static void draw_vline(int x, int y0, int y1) {
+    if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
+    for (int y = y0; y <= y1; y++)
+        px(x, y);
+}
+
+static void draw_rect_outline(int x0, int y0, int x1, int y1) {
+    draw_hline(x0, x1, y0);
+    draw_hline(x0, x1, y1);
+    draw_vline(x0, y0, y1);
+    draw_vline(x1, y0, y1);
+}
+
 static void draw_line(int x0, int y0, int x1, int y1) {
     int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
     int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
@@ -1036,24 +1055,70 @@ static void draw_elevated_overlays(const ElevatedFrameCache *cache) {
     }
 }
 
+static void draw_progress_bar(float scene_t) {
+    static const float chapter_marks[] = { 0.18f, 0.39f, 0.58f, 0.77f, 0.91f };
+    int x0 = 4;
+    int y0 = 11;
+    int x1 = 100;
+    int y1 = 15;
+    int inner_x0 = x0 + 1;
+    int inner_x1 = x1 - 1;
+    int inner_y0 = y0 + 1;
+    int inner_y1 = y1 - 1;
+    int rail_y = (y0 + y1) / 2;
+    int playhead_x;
+    int fill_x1;
+    float progress = 0.0f;
+
+    if (DEMO_SECONDS > 0.0f)
+        progress = clampf_local(scene_t / DEMO_SECONDS, 0.0f, 1.0f);
+
+    playhead_x = inner_x0 + (int)lroundf(progress * (float)(inner_x1 - inner_x0));
+    if (playhead_x < inner_x0) playhead_x = inner_x0;
+    if (playhead_x > inner_x1) playhead_x = inner_x1;
+
+    fill_x1 = inner_x0 + (int)floorf(progress * (float)(inner_x1 - inner_x0 + 1)) - 1;
+
+    draw_rect_outline(x0, y0, x1, y1);
+    if (fill_x1 >= inner_x0)
+        fill_rect(inner_x0, inner_y0, fill_x1, inner_y1);
+
+    for (int x = inner_x0; x <= inner_x1; x += 4) {
+        if (x > fill_x1)
+            px(x, rail_y);
+    }
+
+    for (size_t i = 0; i < sizeof(chapter_marks) / sizeof(chapter_marks[0]); i++) {
+        int tick_x = inner_x0 + (int)lroundf(chapter_marks[i] * (float)(inner_x1 - inner_x0));
+        draw_vline(tick_x, y0 - 1, y0 + 1);
+    }
+
+    draw_vline(playhead_x, y0 - 1, y1 + 1);
+    px(playhead_x - 1, y0);
+    px(playhead_x + 1, y0);
+    px(playhead_x - 1, y1);
+    px(playhead_x + 1, y1);
+}
+
+static void draw_season_meter(const ElevatedParams *p) {
+    int x0 = 107;
+    int x1 = 122;
+    int y0 = 11;
+    int y1 = 15;
+    int rail_y = (y0 + y1) / 2;
+    int marker_x = x0 + 1
+                 + (int)lroundf(clampf_local(p->season, 0.0f, 1.0f) * (float)(x1 - x0 - 2));
+
+    draw_hline(x0 + 1, x1 - 1, rail_y);
+    draw_vline(x0, rail_y - 1, rail_y + 1);
+    draw_vline(x1, rail_y - 1, rail_y + 1);
+    draw_vline(marker_x, y0, y1);
+}
+
 static void draw_header(float scene_t, const ElevatedParams *p) {
-    int dots = 20;
-    int filled = (int)lroundf((scene_t / DEMO_SECONDS) * (float)(dots - 1));
-    if (filled < 0) filled = 0;
-    if (filled >= dots) filled = dots - 1;
-
-    draw_str(2, 4, "ELEVATED RGBA/TBC");
-    for (int i = 0; i < dots; i++) {
-        int x = 4 + i * 6;
-        if (i <= filled) fill_rect(x, 14, x + 2, 15);
-        else px(x, 15);
-    }
-
-    {
-        int season_x = 108 + (int)lroundf(clampf_local(p->season, 0.0f, 1.0f) * 14.0f);
-        fill_rect(106, 12, 122, 12);
-        fill_rect(season_x, 11, season_x + 1, 15);
-    }
+    draw_str(2, 2, "ELEVATED RGBA/TBC");
+    draw_progress_bar(scene_t);
+    draw_season_meter(p);
 }
 
 static void prepare_frame_cache(float scene_t, ElevatedFrameCache *cache) {
