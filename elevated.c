@@ -50,10 +50,8 @@
 #define BLUE_PLANE_BYTES  (WIDTH * (BLUE_H / 8))
 #define I2C_CHUNK         255
 #define SAMPLE_RATE       44100.0f
-#define MAX_NOTE_SAMPLES  5210.0f
-#define TRACK_ROW_SECONDS ((MAX_NOTE_SAMPLES * 4.0f) / SAMPLE_RATE)
-#define DEMO_ROWS         448.0f
-#define DEMO_SECONDS      (DEMO_ROWS * TRACK_ROW_SECONDS)
+#define TRACK_ROW_SECONDS (((float)ELEVATED_MUSIC_MAX_NOTE_SAMPLES * 4.0f) / SAMPLE_RATE)
+#define DEMO_SECONDS      ((float)ELEVATED_MUSIC_CONTENT_SAMPLES / SAMPLE_RATE)
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -500,12 +498,7 @@ static float monotonic_elapsed(const struct timespec *since) {
 }
 
 static size_t demo_cycle_frames(void) {
-    size_t frames = (size_t)lroundf(DEMO_SECONDS * SAMPLE_RATE);
-
-    if (frames == 0 || frames > ELEVATED_MUSIC_TOTAL_SAMPLES)
-        frames = ELEVATED_MUSIC_TOTAL_SAMPLES;
-
-    return frames;
+    return ELEVATED_MUSIC_CONTENT_SAMPLES;
 }
 
 static int build_audio_cycle(int16_t **cycle_pcm, size_t *cycle_frames, float start_time) {
