@@ -739,11 +739,28 @@ static int doom_solid(int x, int y) {
     return doom_map[y][x] != '.';
 }
 
+static void terrain_sample(float x, float z, float *height, float *slope_x, float *slope_z) {
+    float sx = sinf(x * 0.13f);
+    float cx = cosf(x * 0.13f);
+    float cz = cosf(z * 0.10f);
+    float sz = sinf(z * 0.10f);
+    float ssum = sinf((x + z) * 0.05f);
+    float csum = cosf((x + z) * 0.05f);
+    float cdiff = cosf((x - z) * 0.07f);
+    float sdiff = sinf((x - z) * 0.07f);
+
+    if (height)
+        *height = 4.2f * sx + 3.6f * cz + 2.2f * ssum + 1.7f * cdiff;
+    if (slope_x)
+        *slope_x = 4.2f * 0.13f * cx + 2.2f * 0.05f * csum - 1.7f * 0.07f * sdiff;
+    if (slope_z)
+        *slope_z = -3.6f * 0.10f * sz + 2.2f * 0.05f * csum + 1.7f * 0.07f * sdiff;
+}
+
 static float terrain_height(float x, float z) {
-    return 4.2f * sinf(x * 0.13f)
-         + 3.6f * cosf(z * 0.10f)
-         + 2.2f * sinf((x + z) * 0.05f)
-         + 1.7f * cosf((x - z) * 0.07f);
+    float height;
+    terrain_sample(x, z, &height, NULL, NULL);
+    return height;
 }
 
 static float paper_plane_loop_u(float scene_t) {
@@ -1247,7 +1264,20 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
             float ray = yaw + (((float)x - WIDTH * 0.5f) / 84.0f);
             float wx = cam.x + sinf(ray) * depth;
             float wz = cam.z + cosf(ray) * depth;
-            float h = terrain_height(wx, wz);
+            float h, slope_x, slope_z;
+            float biome;
+            float light;
+            int alt_band;
+            int ridge;
+
+            terrain_sample(wx, wz, &h, &slope_x, &slope_z);
+            biome = clampf_local(0.5f
+                               + 0.28f * sinf(wx * 0.045f + wz * 0.018f)
+                               + 0.22f * cosf(wz * 0.038f - wx * 0.021f),
+                               0.0f, 1.0f);
+            light = clampf_local(0.62f - slope_x * 0.95f + slope_z * 0.55f, 0.0f, 1.0f);
+            alt_band = imod((int)floorf((h + 12.0f) * 0.45f), 5);
+            ridge = fabsf(slope_x) + fabsf(slope_z) > 0.70f;
             int sy = (int)lroundf(horizon_y + (cam_h - h) * 24.0f / depth);
             int tex_seed = imod((int)floorf(wx * 0.45f) + (int)floorf(wz * 0.35f), 6);
             int contour = fabsf(fractf_local((h + depth * 0.18f) * 0.35f) - 0.5f) < 0.10f;
@@ -1255,9 +1285,28 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
             if (sy < ybuf[x]) {
                 for (int y = sy; y <= ybuf[x]; y++) {
                     int tex_level = level;
+
+                    if (light > 0.68f && tex_level < 4) tex_level++;
+                    if (light < 0.34f && tex_level > 1) tex_level--;
+
+                    if (biome > 0.66f) {
+                        if (imod(x + y + tex_seed + alt_band, 5) == 0 && tex_level < 4) tex_level++;
+                    } else if (biome < 0.34f) {
+                        if (imod(x * 2 + y + tex_seed, 4) == 0 && tex_level > 1) tex_level--;
+                        if (imod(x - y + tex_seed + alt_band, 7) == 0 && tex_level < 4) tex_level++;
+                    }
+
+                    if ((alt_band & 1) == 0) {
+                        if (imod(y + tex_seed, 6) == 0 && tex_level > 1) tex_level--;
+                    } else {
+                        if (imod(x + y + tex_seed, 6) == 0 && tex_level < 4) tex_level++;
+                    }
+
                     if (((y + tex_seed) & 1) == 0 && tex_level > 1) tex_level--;
                     if (depth > 16.0f && imod(y + x + tex_seed, 3) == 0 && tex_level > 1) tex_level--;
+                    if (ridge && imod(x - y + tex_seed, 4) == 0 && tex_level < 4) tex_level++;
                     if (contour && y <= sy + 1) tex_level = 4;
+                    tex_level = (int)clampf_local((float)tex_level, 1.0f, 4.0f);
                     shade_px(x, y, tex_level, phase);
                 }
                 ybuf[x] = sy;
