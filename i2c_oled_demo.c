@@ -1188,32 +1188,46 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
         int z_far = (int)floorf((cam.z + 58.0f) / 4.2f);
 
         for (int iz = z_far; iz >= z_near; iz--) {
-            for (int ix = -6; ix <= 6; ix++) {
-                int seed = ix * 92821 + iz * 68917;
-                float presence = hash01(seed + 5);
-                float kind = hash01(seed + 17);
-                float wz, wx, ground;
-                vec3_t base;
+            float row_dist = (float)iz * 4.2f - cam.z;
+            float near_t = 1.0f - clampf_local((row_dist - 8.0f) / 40.0f, 0.0f, 1.0f);
+            int x_span = near_t > 0.70f ? 8 : near_t > 0.35f ? 7 : 6;
+            int variants = near_t > 0.72f ? 3 : near_t > 0.34f ? 2 : 1;
+            float presence_cut = mixf_local(0.90f, 0.44f, near_t);
 
-                if (presence < 0.72f) continue;
+            for (int ix = -x_span; ix <= x_span; ix++) {
+                for (int variant = 0; variant < variants; variant++) {
+                    int seed = ix * 92821 + iz * 68917 + variant * 1237;
+                    float presence = hash01(seed + 5);
+                    float kind = hash01(seed + 17);
+                    float variant_center = variants > 1 ? (float)variant / (float)(variants - 1) - 0.5f : 0.0f;
+                    float wz, wx, ground, scale_boost;
+                    vec3_t base;
 
-                wz = iz * 4.2f + (hash01(seed + 31) - 0.5f) * 1.5f;
-                wx = ix * 4.8f + (hash01(seed + 47) - 0.5f) * 2.6f
-                   + 1.0f * sinf((float)iz * 0.7f + (float)ix);
+                    if (presence < presence_cut) continue;
 
-                if (fabsf(wx - plane.x) < 3.0f && fabsf(wz - plane.z) < 7.0f) continue;
+                    wz = iz * 4.2f
+                       + (hash01(seed + 31) - 0.5f) * 1.5f
+                       + variant_center * (0.55f + 0.65f * near_t);
+                    wx = ix * 4.8f
+                       + (hash01(seed + 47) - 0.5f) * (2.6f + near_t * 1.3f)
+                       + 1.0f * sinf((float)iz * 0.7f + (float)ix)
+                       + variant_center * (0.90f + 0.80f * near_t);
 
-                ground = terrain_height(wx, wz);
-                base = v3(wx, ground + 0.05f, wz);
+                    if (fabsf(wx - plane.x) < 3.0f && fabsf(wz - plane.z) < 7.0f) continue;
 
-                if (kind > 0.58f && ground > -6.0f) {
-                    float height = 0.85f + 1.60f * hash01(seed + 59);
-                    float lean = (hash01(seed + 71) - 0.5f) * 0.35f;
-                    draw_hill_tree(base, height, lean, cam, yaw, pitch, scene_scale, ybuf);
-                } else {
-                    float size = 0.30f + 0.70f * hash01(seed + 83);
-                    float skew = hash01(seed + 97) - 0.5f;
-                    draw_hill_rock(base, size, skew, cam, yaw, pitch, scene_scale, ybuf);
+                    ground = terrain_height(wx, wz);
+                    base = v3(wx, ground + 0.05f, wz);
+                    scale_boost = 0.90f + near_t * 0.55f;
+
+                    if (kind > mixf_local(0.66f, 0.48f, near_t) && ground > -6.0f) {
+                        float height = (0.75f + 1.45f * hash01(seed + 59)) * scale_boost;
+                        float lean = (hash01(seed + 71) - 0.5f) * (0.25f + 0.20f * near_t);
+                        draw_hill_tree(base, height, lean, cam, yaw, pitch, scene_scale, ybuf);
+                    } else {
+                        float size = (0.26f + 0.62f * hash01(seed + 83)) * scale_boost;
+                        float skew = hash01(seed + 97) - 0.5f;
+                        draw_hill_rock(base, size, skew, cam, yaw, pitch, scene_scale, ybuf);
+                    }
                 }
             }
         }
