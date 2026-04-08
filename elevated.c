@@ -501,18 +501,17 @@ static size_t demo_cycle_frames(void) {
     return ELEVATED_MUSIC_CONTENT_SAMPLES;
 }
 
-static int build_audio_cycle(int16_t **cycle_pcm, size_t *cycle_frames, float start_time) {
+static int build_audio_segment(int16_t **segment_pcm, size_t *segment_frames, float start_time) {
     int16_t *full_pcm = NULL;
     size_t full_frames = 0;
     size_t frames = demo_cycle_frames();
     size_t offset_frames;
-    int16_t *loop_pcm;
-    float wrapped_time = fmodf(start_time, DEMO_SECONDS);
+    size_t remaining_frames;
+    int16_t *segment_buf;
+    float clamped_time = clampf_local(start_time, 0.0f, DEMO_SECONDS);
 
-    if (wrapped_time < 0.0f) wrapped_time += DEMO_SECONDS;
-
-    *cycle_pcm = NULL;
-    *cycle_frames = 0;
+    *segment_pcm = NULL;
+    *segment_frames = 0;
 
     if (!elevated_music_generate_pcm16(&full_pcm, &full_frames))
         return 0;
@@ -520,31 +519,29 @@ static int build_audio_cycle(int16_t **cycle_pcm, size_t *cycle_frames, float st
     if (full_frames < frames)
         frames = full_frames;
 
-    offset_frames = (size_t)floorf(wrapped_time * SAMPLE_RATE);
-    if (frames > 0)
-        offset_frames %= frames;
+    offset_frames = (size_t)floorf(clamped_time * SAMPLE_RATE);
+    if (offset_frames > frames)
+        offset_frames = frames;
 
-    loop_pcm = (int16_t *)malloc(frames * 2u * sizeof(*loop_pcm));
-    if (!loop_pcm) {
+    remaining_frames = frames - offset_frames;
+    if (remaining_frames == 0) {
+        free(full_pcm);
+        return 1;
+    }
+
+    segment_buf = (int16_t *)malloc(remaining_frames * 2u * sizeof(*segment_buf));
+    if (!segment_buf) {
         free(full_pcm);
         return 0;
     }
 
-    if (frames > 0) {
-        size_t first_chunk = frames - offset_frames;
-        memcpy(loop_pcm,
-               full_pcm + offset_frames * 2u,
-               first_chunk * 2u * sizeof(*loop_pcm));
-        if (offset_frames > 0) {
-            memcpy(loop_pcm + first_chunk * 2u,
-                   full_pcm,
-                   offset_frames * 2u * sizeof(*loop_pcm));
-        }
-    }
+    memcpy(segment_buf,
+           full_pcm + offset_frames * 2u,
+           remaining_frames * 2u * sizeof(*segment_buf));
 
     free(full_pcm);
-    *cycle_pcm = loop_pcm;
-    *cycle_frames = frames;
+    *segment_pcm = segment_buf;
+    *segment_frames = remaining_frames;
     return 1;
 }
 
@@ -680,17 +677,18 @@ static void poll_audio_playback(AudioPlayback *audio) {
         return;
 
     waited = waitpid(audio->pid, &status, WNOHANG);
-    if (waited != audio->pid)
+    if (waited == 0)
         return;
 
     audio->pid = -1;
-    if (monotonic_elapsed(&audio->launched_at) < 1.0f) {
+    if (waited < 0) {
         audio->disabled = 1;
         return;
     }
 
-    if (!launch_audio_playback(audio))
+    if (monotonic_elapsed(&audio->launched_at) < 1.0f) {
         audio->disabled = 1;
+    }
 }
 
 static void cleanup_audio_playback(AudioPlayback *audio) {
@@ -815,22 +813,24 @@ static float sample_track(const TrackData *track, float scene_t) {
 }
 
 static void sample_params(float scene_t, ElevatedParams *p) {
-    float loop_t = fmodf(scene_t, DEMO_SECONDS);
-    if (loop_t < 0.0f) loop_t += DEMO_SECONDS;
+    float clamped_t = clampf_local(scene_t, 0.0f, DEMO_SECONDS);
 
-    p->time = loop_t;
-    p->cam_seed_x = sample_track(camSeedX, loop_t) / 256.0f;
-    p->cam_seed_y = sample_track(camSeedY, loop_t) / 256.0f;
-    p->cam_speed = sample_track(camSpeed, loop_t) / 4096.0f;
-    p->cam_fov = sample_track(camFov, loop_t) / 96.0f;
-    p->cam_pos_y = sample_track(camPosY, loop_t) / 64.0f;
-    p->cam_tar_y = (sample_track(camTarY, loop_t) - 128.0f) / 4.0f;
-    p->sun_angle = sample_track(sun_angle, loop_t) / 32.0f;
-    p->water_level = (sample_track(terWaterLevel, loop_t) - 192.0f) / 128.0f;
-    p->season = sample_track(terSeason, loop_t) / 256.0f;
-    p->brightness = (sample_track(imgBrightness, loop_t) - 128.0f) / 128.0f;
-    p->contrast = sample_track(imgContrast, loop_t) / 128.0f;
-    p->terrain_scale = (sample_track(terScale, loop_t) - 128.0f) / 128.0f;
+    if (DEMO_SECONDS > 0.0f && clamped_t >= DEMO_SECONDS)
+        clamped_t = nextafterf(DEMO_SECONDS, 0.0f);
+
+    p->time = clamped_t;
+    p->cam_seed_x = sample_track(camSeedX, clamped_t) / 256.0f;
+    p->cam_seed_y = sample_track(camSeedY, clamped_t) / 256.0f;
+    p->cam_speed = sample_track(camSpeed, clamped_t) / 4096.0f;
+    p->cam_fov = sample_track(camFov, clamped_t) / 96.0f;
+    p->cam_pos_y = sample_track(camPosY, clamped_t) / 64.0f;
+    p->cam_tar_y = (sample_track(camTarY, clamped_t) - 128.0f) / 4.0f;
+    p->sun_angle = sample_track(sun_angle, clamped_t) / 32.0f;
+    p->water_level = (sample_track(terWaterLevel, clamped_t) - 192.0f) / 128.0f;
+    p->season = sample_track(terSeason, clamped_t) / 256.0f;
+    p->brightness = (sample_track(imgBrightness, clamped_t) - 128.0f) / 128.0f;
+    p->contrast = sample_track(imgContrast, clamped_t) / 128.0f;
+    p->terrain_scale = (sample_track(terScale, clamped_t) - 128.0f) / 128.0f;
     p->snow = smoothstep_local((p->season - 0.33f) / 0.45f);
     p->sun_dir = v3_norm(v3(cosf(p->sun_angle), 0.32f + 0.06f * (1.0f - p->snow), sinf(p->sun_angle)));
 }
@@ -1222,16 +1222,16 @@ int main(int argc, char *argv[]) {
     signal(SIGTERM, stop);
 
     {
-        int16_t *cycle_pcm = NULL;
-        size_t cycle_frames = 0;
+        int16_t *segment_pcm = NULL;
+        size_t segment_frames = 0;
 
         audio_playback.pid = -1;
         audio_playback.wav_path[0] = '\0';
         audio_playback.have_wav = 0;
         audio_playback.disabled = 0;
 
-        if (build_audio_cycle(&cycle_pcm, &cycle_frames, start_time)
-            && create_audio_wav(&audio_playback, cycle_pcm, cycle_frames)) {
+        if (build_audio_segment(&segment_pcm, &segment_frames, start_time)
+            && create_audio_wav(&audio_playback, segment_pcm, segment_frames)) {
             if (!launch_audio_playback(&audio_playback)) {
                 audio_playback.disabled = 1;
                 if (!daemonize)
@@ -1241,7 +1241,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "warning: failed to generate Elevated soundtrack\n");
         }
 
-        free(cycle_pcm);
+        free(segment_pcm);
     }
 
     {
@@ -1255,6 +1255,7 @@ int main(int argc, char *argv[]) {
 
         while (running) {
             struct timespec now;
+            int reached_end = 0;
             float dt;
             unsigned subframe_tick;
             unsigned motion_tick;
@@ -1267,11 +1268,16 @@ int main(int argc, char *argv[]) {
             prev = now;
 
             poll_audio_playback(&audio_playback);
-            if (!audio_playback.disabled && audio_playback.pid > 0) {
-                sim_t = fmodf(start_time + monotonic_elapsed(&audio_playback.launched_at), DEMO_SECONDS);
+            if (!audio_playback.disabled
+                && (audio_playback.launched_at.tv_sec != 0 || audio_playback.launched_at.tv_nsec != 0)) {
+                sim_t = start_time + monotonic_elapsed(&audio_playback.launched_at);
             } else {
                 sim_t += dt;
-                if (sim_t >= DEMO_SECONDS) sim_t = fmodf(sim_t, DEMO_SECONDS);
+            }
+
+            if (sim_t >= DEMO_SECONDS) {
+                sim_t = DEMO_SECONDS;
+                reached_end = 1;
             }
 
             subframe_tick = (unsigned)floorf(sim_t * PDM_SUBFRAME_HZ);
@@ -1286,6 +1292,9 @@ int main(int argc, char *argv[]) {
             else flush_pages(BLUE_START_PAGE, PAGES - 1);
 
             last_motion_tick = motion_tick;
+
+            if (reached_end)
+                running = 0;
 
             next.tv_nsec += frame_ns;
             if (next.tv_nsec >= 1000000000L) {
