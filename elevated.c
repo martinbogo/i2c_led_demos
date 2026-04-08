@@ -402,10 +402,9 @@ static int project_world(vec3_t p, vec3_t cam, float yaw, float pitch,
 
 static void usage(const char *argv0) {
     fprintf(stderr,
-            "usage: %s [-d] [-t seconds] [--dump-frame FILE] [-h|-?]\n"
-            "  -d               run as a daemon\n"
-            "  -t seconds       start or dump from a given timeline position\n"
-            "  --dump-frame F   render one frame to F (PGM) and exit\n"
+            "usage: %s [-n] [-t seconds] [-h|-?]\n"
+            "  -n               disable sound output\n"
+            "  -t seconds       start from a given timeline position\n"
             "  -h, -?           show this help message\n",
             argv0);
 }
@@ -416,29 +415,6 @@ static int parse_float_arg(const char *arg, float *out) {
     if (!arg[0] || (end && *end)) return 0;
     *out = v;
     return 1;
-}
-
-static int daemonize_process(void) {
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid > 0) _exit(0);
-
-    if (setsid() < 0) return -1;
-
-    pid = fork();
-    if (pid < 0) return -1;
-    if (pid > 0) _exit(0);
-
-    if (chdir("/") != 0) return -1;
-
-    close(STDIN_FILENO);
-    close(STDOUT_FILENO);
-    close(STDERR_FILENO);
-
-    if (open("/dev/null", O_RDWR) < 0) return -1;
-    if (dup(STDIN_FILENO) < 0) return -1;
-    if (dup(STDIN_FILENO) < 0) return -1;
-    return 0;
 }
 
 static void init_display(void) {
@@ -712,11 +688,6 @@ static void px(int x, int y) {
 
 static void bpx(int x, int y) {
     px(x, y + BLUE_Y);
-}
-
-static int fb_on(int x, int y) {
-    if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT) return 0;
-    return (fb[x + (y / 8) * WIDTH] >> (y & 7)) & 1;
 }
 
 static void fill_rect(int x0, int y0, int x1, int y1) {
@@ -1139,48 +1110,18 @@ static void draw_cached_frame(const ElevatedFrameCache *cache, unsigned phase, i
     draw_elevated_overlays(cache);
 }
 
-static int write_pgm(const char *path) {
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        perror(path);
-        return 0;
-    }
-
-    fprintf(f, "P5\n# elevated-oled-frame\n%d %d\n255\n", WIDTH, HEIGHT);
-    for (int y = 0; y < HEIGHT; y++) {
-        for (int x = 0; x < WIDTH; x++) {
-            uint8_t pxv = fb_on(x, y) ? 255 : 0;
-            if (fwrite(&pxv, 1, 1, f) != 1) {
-                perror("fwrite");
-                fclose(f);
-                return 0;
-            }
-        }
-    }
-
-    fclose(f);
-    return 1;
-}
-
 int main(int argc, char *argv[]) {
-    int daemonize = 0;
+    int disable_audio = 0;
     float start_time = 0.0f;
-    const char *dump_frame_path = NULL;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-d") == 0) {
-            daemonize = 1;
+        if (strcmp(argv[i], "-n") == 0) {
+            disable_audio = 1;
         } else if (strcmp(argv[i], "-t") == 0) {
             if (++i >= argc || !parse_float_arg(argv[i], &start_time)) {
                 usage(argv[0]);
                 return 1;
             }
-        } else if (strcmp(argv[i], "--dump-frame") == 0) {
-            if (++i >= argc) {
-                usage(argv[0]);
-                return 1;
-            }
-            dump_frame_path = argv[i];
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "-?") == 0) {
             usage(argv[0]);
             return 0;
@@ -1193,18 +1134,6 @@ int main(int argc, char *argv[]) {
     if (start_time < 0.0f) start_time = 0.0f;
     start_time = fmodf(start_time, DEMO_SECONDS);
     if (start_time < 0.0f) start_time += DEMO_SECONDS;
-
-    if (dump_frame_path) {
-        unsigned subframe_tick = (unsigned)floorf(start_time * PDM_SUBFRAME_HZ);
-        prepare_frame_cache(start_time, &frame_cache);
-        draw_cached_frame(&frame_cache, subframe_tick % PDM_PHASES, 1);
-        return write_pgm(dump_frame_path) ? 0 : 1;
-    }
-
-    if (daemonize && daemonize_process() != 0) {
-        perror("daemonize");
-        return 1;
-    }
 
     i2c_fd = open("/dev/i2c-1", O_RDWR);
     if (i2c_fd < 0) {
@@ -1228,17 +1157,21 @@ int main(int argc, char *argv[]) {
         audio_playback.pid = -1;
         audio_playback.wav_path[0] = '\0';
         audio_playback.have_wav = 0;
-        audio_playback.disabled = 0;
+        audio_playback.disabled = disable_audio ? 1 : 0;
+        audio_playback.launched_at.tv_sec = 0;
+        audio_playback.launched_at.tv_nsec = 0;
 
-        if (build_audio_segment(&segment_pcm, &segment_frames, start_time)
-            && create_audio_wav(&audio_playback, segment_pcm, segment_frames)) {
-            if (!launch_audio_playback(&audio_playback)) {
-                audio_playback.disabled = 1;
-                if (!daemonize)
+        if (!audio_playback.disabled) {
+            if (build_audio_segment(&segment_pcm, &segment_frames, start_time)
+                && create_audio_wav(&audio_playback, segment_pcm, segment_frames)) {
+                if (!launch_audio_playback(&audio_playback)) {
+                    audio_playback.disabled = 1;
                     fprintf(stderr, "warning: audio playback unavailable: %s\n", strerror(errno));
+                }
+            } else {
+                audio_playback.disabled = 1;
+                fprintf(stderr, "warning: failed to generate Elevated soundtrack\n");
             }
-        } else if (!daemonize) {
-            fprintf(stderr, "warning: failed to generate Elevated soundtrack\n");
         }
 
         free(segment_pcm);
