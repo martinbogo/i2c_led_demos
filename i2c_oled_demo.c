@@ -708,6 +708,32 @@ static void draw_hill_rock(vec3_t base, float size, float skew,
     bline(bx, by, lx, ly);
 }
 
+static void draw_hill_tall_tree(vec3_t base, float height, float lean,
+                                vec3_t cam, float yaw, float pitch, float scale,
+                                const int *ybuf) {
+    draw_hill_tree(base, height, lean, cam, yaw, pitch, scale, ybuf);
+    draw_hill_tree(v3(base.x - height * 0.18f, base.y + 0.02f, base.z + 0.10f),
+                   height * 0.58f, lean * 0.45f - 0.12f,
+                   cam, yaw, pitch, scale, ybuf);
+    if (height > 2.4f) {
+        draw_hill_tree(v3(base.x + height * 0.15f, base.y + 0.01f, base.z - 0.08f),
+                       height * 0.46f, lean * 0.20f + 0.10f,
+                       cam, yaw, pitch, scale, ybuf);
+    }
+}
+
+static void draw_hill_outcrop(vec3_t base, float size, float skew,
+                              vec3_t cam, float yaw, float pitch, float scale,
+                              const int *ybuf) {
+    draw_hill_rock(base, size, skew, cam, yaw, pitch, scale, ybuf);
+    draw_hill_rock(v3(base.x - size * 0.60f, base.y + 0.02f, base.z + 0.08f),
+                   size * 0.70f, skew - 0.18f,
+                   cam, yaw, pitch, scale, ybuf);
+    draw_hill_rock(v3(base.x + size * 0.55f, base.y + 0.01f, base.z - 0.06f),
+                   size * 0.56f, skew + 0.24f,
+                   cam, yaw, pitch, scale, ybuf);
+}
+
 static int doom_solid(int x, int y) {
     if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return 1;
     return doom_map[y][x] != '.';
@@ -1228,6 +1254,47 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
                         float skew = hash01(seed + 97) - 0.5f;
                         draw_hill_rock(base, size, skew, cam, yaw, pitch, scene_scale, ybuf);
                     }
+                }
+            }
+        }
+    }
+
+    {
+        int hero_near = (int)floorf((cam.z + 8.0f) / 6.8f);
+        int hero_far = (int)floorf((cam.z + 24.0f) / 6.8f);
+
+        for (int iz = hero_far; iz >= hero_near; iz--) {
+            float wz_center = iz * 6.8f;
+            float row_dist = wz_center - cam.z;
+            float hero_t = 1.0f - clampf_local((row_dist - 8.0f) / 18.0f, 0.0f, 1.0f);
+
+            for (int lane = -1; lane <= 1; lane += 2) {
+                int seed = lane * 170003 + iz * 94183;
+                float presence = hash01(seed + 11);
+                float kind = hash01(seed + 23);
+                float side = (float)lane;
+                float wz = wz_center + (hash01(seed + 41) - 0.5f) * 2.0f;
+                float wx = side * (8.5f + 2.4f * hero_t + hash01(seed + 53) * 4.0f)
+                         + (hash01(seed + 67) - 0.5f) * 1.6f;
+                float ground;
+                vec3_t base;
+
+                if (presence < mixf_local(0.88f, 0.52f, hero_t)) continue;
+                if (fabsf(wx - plane.x) < 5.0f && fabsf(wz - plane.z) < 10.0f) continue;
+
+                ground = terrain_height(wx, wz);
+                if (ground < -7.0f) continue;
+
+                base = v3(wx, ground + 0.05f, wz);
+
+                if (kind > 0.48f) {
+                    float height = (2.2f + 1.8f * hash01(seed + 79)) * (0.95f + 0.35f * hero_t);
+                    float lean = side * (0.08f + 0.18f * hash01(seed + 89));
+                    draw_hill_tall_tree(base, height, lean, cam, yaw, pitch, scene_scale, ybuf);
+                } else {
+                    float size = (1.15f + 0.95f * hash01(seed + 97)) * (0.95f + 0.40f * hero_t);
+                    float skew = side * (0.10f + 0.45f * hash01(seed + 101));
+                    draw_hill_outcrop(base, size, skew, cam, yaw, pitch, scene_scale, ybuf);
                 }
             }
         }
