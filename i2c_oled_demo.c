@@ -790,6 +790,17 @@ static float terrain_height(float x, float z) {
     return height;
 }
 
+static int terrain_band_level(float depth, float light, float biome) {
+    int level = depth < 7.0f ? 4 : depth < 15.0f ? 3 : depth < 28.0f ? 2 : 1;
+
+    if (light > 0.70f && level < 4) level++;
+    if (light < 0.36f && level > 1) level--;
+    if (biome > 0.72f && level < 4) level++;
+    if (biome < 0.30f && level > 1) level--;
+
+    return (int)clampf_local((float)level, 1.0f, 4.0f);
+}
+
 static float paper_plane_loop_u(float scene_t) {
     return clampf_local((scene_t - 19.5f) / 6.6f, 0.0f, 1.0f);
 }
@@ -852,33 +863,32 @@ static vec3_t raise_drone_camera(vec3_t cam, float clearance) {
 }
 
 static void paper_plane_drone_camera(float scene_t, vec3_t plane,
-                                                 vec3_t *cam_out, vec3_t *focus_out, float *scale_out) {
+                                     vec3_t *cam_out, vec3_t *focus_out, float *scale_out) {
     float side_w = window_local(scene_t, 4.0f, 10.8f, 1.6f);
     float overtake_w = window_local(scene_t, 10.2f, 17.8f, 1.5f);
     float loop_w = window_local(scene_t, 17.6f, 24.8f, 1.2f);
     float skim_w = window_local(scene_t, 24.3f, 29.5f, 1.0f);
-     float roll_dummy;
-
-     vec3_t far_lead = paper_plane_path(scene_t + 2.0f);
+    float roll_dummy;
+    vec3_t far_lead = paper_plane_path(scene_t + 2.0f);
 
     vec3_t follow_anchor = paper_plane_path(scene_t - 2.20f);
-     float follow_yaw, follow_pitch;
+    float follow_yaw, follow_pitch;
     paper_plane_attitude(scene_t - 1.35f, &follow_yaw, &follow_pitch, &roll_dummy);
     vec3_t follow_cam = ship_tf(v3(11.8f + 1.1f * sinf(scene_t * 0.32f),
                                    10.2f + 1.0f * cosf(scene_t * 0.27f),
                                    -18.4f),
-                                          follow_anchor, follow_yaw, follow_pitch * 0.25f, 0.0f, 1.0f);
+                                follow_anchor, follow_yaw, follow_pitch * 0.25f, 0.0f, 1.0f);
     follow_cam = raise_drone_camera(follow_cam, 5.0f);
     vec3_t follow_focus = v3_add(v3_mix(plane, far_lead, 0.28f), v3(0.0f, -0.1f, 0.0f));
     float follow_scale = 79.0f;
 
     vec3_t side_anchor = paper_plane_path(scene_t - 1.10f);
-     float side_yaw, side_pitch;
+    float side_yaw, side_pitch;
     paper_plane_attitude(scene_t - 0.35f, &side_yaw, &side_pitch, &roll_dummy);
     vec3_t side_cam = ship_tf(v3(15.5f + 1.0f * sinf(scene_t * 0.23f),
                                  -0.8f + 0.7f * cosf(scene_t * 0.38f),
                                  -6.4f + 1.4f * sinf(scene_t * 0.29f)),
-                                        side_anchor, side_yaw, side_pitch * 0.10f, 0.0f, 1.0f);
+                              side_anchor, side_yaw, side_pitch * 0.10f, 0.0f, 1.0f);
     side_cam = raise_drone_camera(side_cam, 3.2f);
     vec3_t side_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 1.6f), 0.18f),
                                v3(0.0f, -0.2f, 0.0f));
@@ -886,63 +896,63 @@ static void paper_plane_drone_camera(float scene_t, vec3_t plane,
 
     float overtake_u = smoothstep_local(clampf_local((scene_t - 10.2f) / 7.6f, 0.0f, 1.0f));
     vec3_t overtake_anchor = paper_plane_path(scene_t - 0.45f);
-     float overtake_yaw, overtake_pitch;
+    float overtake_yaw, overtake_pitch;
     paper_plane_attitude(scene_t + 0.20f, &overtake_yaw, &overtake_pitch, &roll_dummy);
     float overtake_a = mixf_local(-0.86f * (float)M_PI, 0.08f * (float)M_PI, overtake_u);
     float overtake_r = mixf_local(18.5f, 13.0f, overtake_u);
-     vec3_t overtake_cam = ship_tf(v3(sinf(overtake_a) * overtake_r,
-                                                                         mixf_local(-0.8f, 8.0f, overtake_u)
+    vec3_t overtake_cam = ship_tf(v3(sinf(overtake_a) * overtake_r,
+                                     mixf_local(-0.8f, 8.0f, overtake_u)
                                          + 0.6f * sinf(overtake_u * (float)M_PI),
                                      -cosf(overtake_a) * overtake_r - 2.8f),
-                                             overtake_anchor, overtake_yaw, overtake_pitch * 0.14f, 0.0f, 1.0f);
-        overtake_cam = raise_drone_camera(overtake_cam, 3.8f);
-        vec3_t overtake_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 0.9f), 0.12f),
-                                                                     v3(0.0f, 0.0f, 0.0f));
+                                  overtake_anchor, overtake_yaw, overtake_pitch * 0.14f, 0.0f, 1.0f);
+    overtake_cam = raise_drone_camera(overtake_cam, 3.8f);
+    vec3_t overtake_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 0.9f), 0.12f),
+                                   v3(0.0f, 0.0f, 0.0f));
     float overtake_scale = 80.0f;
 
     vec3_t loop_anchor = paper_plane_path(scene_t + 0.55f);
-     float loop_yaw, loop_pitch;
-     paper_plane_attitude(scene_t + 0.45f, &loop_yaw, &loop_pitch, &roll_dummy);
+    float loop_yaw, loop_pitch;
+    paper_plane_attitude(scene_t + 0.45f, &loop_yaw, &loop_pitch, &roll_dummy);
     vec3_t loop_cam = ship_tf(v3(13.5f,
-                                                                 13.0f + 3.6f * sinf(paper_plane_loop_u(scene_t) * (float)M_PI),
+                                 13.0f + 3.6f * sinf(paper_plane_loop_u(scene_t) * (float)M_PI),
                                  -14.5f),
-                                        loop_anchor, loop_yaw, loop_pitch * 0.08f, 0.0f, 1.0f);
-        loop_cam = raise_drone_camera(loop_cam, 6.0f);
-        vec3_t loop_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 1.2f), 0.16f),
-                                                             v3(0.0f, 0.3f, 0.0f));
+                              loop_anchor, loop_yaw, loop_pitch * 0.08f, 0.0f, 1.0f);
+    loop_cam = raise_drone_camera(loop_cam, 6.0f);
+    vec3_t loop_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 1.2f), 0.16f),
+                               v3(0.0f, 0.3f, 0.0f));
     float loop_scale = 74.0f;
 
     vec3_t skim_anchor = paper_plane_path(scene_t - 0.95f);
-     float skim_yaw, skim_pitch;
+    float skim_yaw, skim_pitch;
     paper_plane_attitude(scene_t + 0.10f, &skim_yaw, &skim_pitch, &roll_dummy);
     vec3_t skim_cam = ship_tf(v3(-9.6f,
-                                                                 -1.6f + 0.5f * sinf(scene_t * 0.44f),
+                                 -1.6f + 0.5f * sinf(scene_t * 0.44f),
                                  -14.0f),
-                                        skim_anchor, skim_yaw, skim_pitch * 0.08f, 0.0f, 1.0f);
-        skim_cam = raise_drone_camera(skim_cam, 2.6f);
-        vec3_t skim_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 1.9f), 0.24f),
-                                                                                 v3(0.0f, -0.8f, 0.0f));
+                              skim_anchor, skim_yaw, skim_pitch * 0.08f, 0.0f, 1.0f);
+    skim_cam = raise_drone_camera(skim_cam, 2.6f);
+    vec3_t skim_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 1.9f), 0.24f),
+                               v3(0.0f, -0.8f, 0.0f));
     float skim_scale = 82.0f;
 
-     *cam_out = follow_cam;
-     *focus_out = follow_focus;
-     *scale_out = follow_scale;
+    *cam_out = follow_cam;
+    *focus_out = follow_focus;
+    *scale_out = follow_scale;
 
-     *cam_out = v3_mix(*cam_out, side_cam, side_w);
-     *focus_out = v3_mix(*focus_out, side_focus, side_w);
-     *scale_out = mixf_local(*scale_out, side_scale, side_w);
+    *cam_out = v3_mix(*cam_out, side_cam, side_w);
+    *focus_out = v3_mix(*focus_out, side_focus, side_w);
+    *scale_out = mixf_local(*scale_out, side_scale, side_w);
 
-     *cam_out = v3_mix(*cam_out, overtake_cam, overtake_w);
-     *focus_out = v3_mix(*focus_out, overtake_focus, overtake_w);
-     *scale_out = mixf_local(*scale_out, overtake_scale, overtake_w);
+    *cam_out = v3_mix(*cam_out, overtake_cam, overtake_w);
+    *focus_out = v3_mix(*focus_out, overtake_focus, overtake_w);
+    *scale_out = mixf_local(*scale_out, overtake_scale, overtake_w);
 
-     *cam_out = v3_mix(*cam_out, loop_cam, loop_w);
-     *focus_out = v3_mix(*focus_out, loop_focus, loop_w);
-     *scale_out = mixf_local(*scale_out, loop_scale, loop_w);
+    *cam_out = v3_mix(*cam_out, loop_cam, loop_w);
+    *focus_out = v3_mix(*focus_out, loop_focus, loop_w);
+    *scale_out = mixf_local(*scale_out, loop_scale, loop_w);
 
-     *cam_out = v3_mix(*cam_out, skim_cam, skim_w);
-     *focus_out = v3_mix(*focus_out, skim_focus, skim_w);
-     *scale_out = mixf_local(*scale_out, skim_scale, skim_w);
+    *cam_out = v3_mix(*cam_out, skim_cam, skim_w);
+    *focus_out = v3_mix(*focus_out, skim_focus, skim_w);
+    *scale_out = mixf_local(*scale_out, skim_scale, skim_w);
 }
 
 static vec3_t tank_tf(vec3_t p, vec3_t pos, float yaw) {
@@ -1293,7 +1303,6 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
     for (int x = 0; x < WIDTH; x++) ybuf[x] = BLUE_H - 1;
 
     for (float depth = 58.0f; depth > 1.0f; depth -= 0.45f) {
-        int level = depth < 7.0f ? 4 : depth < 15.0f ? 3 : depth < 28.0f ? 2 : 1;
         for (int x = 0; x < WIDTH; x++) {
             float ray = yaw + (((float)x - WIDTH * 0.5f) / 84.0f);
             float wx = cam.x + sinf(ray) * depth;
@@ -1303,6 +1312,10 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
             float light;
             int alt_band;
             int ridge;
+            int sy;
+            int tex_seed;
+            int contour;
+            int level;
 
             terrain_sample(wx, wz, &h, &slope_x, &slope_z);
             biome = clampf_local(0.5f
@@ -1312,37 +1325,44 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
             light = clampf_local(0.62f - slope_x * 0.95f + slope_z * 0.55f, 0.0f, 1.0f);
             alt_band = imod((int)floorf((h + 12.0f) * 0.45f), 5);
             ridge = fabsf(slope_x) + fabsf(slope_z) > 0.70f;
-            int sy = (int)lroundf(horizon_y + (cam_h - h) * 24.0f / depth);
-            int tex_seed = imod((int)floorf(wx * 0.45f) + (int)floorf(wz * 0.35f), 6);
-            int contour = fabsf(fractf_local((h + depth * 0.18f) * 0.35f) - 0.5f) < 0.10f;
+            sy = (int)lroundf(horizon_y + (cam_h - h) * 24.0f / depth);
+            level = terrain_band_level(depth, light, biome);
+            tex_seed = imod((int)floorf(wx * 0.45f) + (int)floorf(wz * 0.35f), 7);
+            contour = fabsf(fractf_local((h + depth * 0.18f) * 0.35f) - 0.5f) < 0.10f;
+
             if (sy < 0) sy = 0;
             if (sy < ybuf[x]) {
                 for (int y = sy; y <= ybuf[x]; y++) {
                     int tex_level = level;
+                    int top_offset = y - sy;
 
-                    if (light > 0.68f && tex_level < 4) tex_level++;
-                    if (light < 0.34f && tex_level > 1) tex_level--;
-
-                    if (biome > 0.66f) {
-                        if (imod(x + y + tex_seed + alt_band, 5) == 0 && tex_level < 4) tex_level++;
-                    } else if (biome < 0.34f) {
-                        if (imod(x * 2 + y + tex_seed, 4) == 0 && tex_level > 1) tex_level--;
-                        if (imod(x - y + tex_seed + alt_band, 7) == 0 && tex_level < 4) tex_level++;
-                    }
-
-                    if ((alt_band & 1) == 0) {
-                        if (imod(y + tex_seed, 6) == 0 && tex_level > 1) tex_level--;
+                    if (top_offset == 0) {
+                        tex_level = 4;
+                    } else if (ridge && top_offset <= 1 && tex_level < 4) {
+                        tex_level++;
                     } else {
-                        if (imod(x + y + tex_seed, 6) == 0 && tex_level < 4) tex_level++;
+                        if (biome > 0.66f) {
+                            if (imod(top_offset + tex_seed + alt_band, 5) == 0 && tex_level < 4) tex_level++;
+                        } else if (biome < 0.34f) {
+                            if (imod(top_offset + tex_seed, 4) == 0 && tex_level > 1) tex_level--;
+                            if (imod(top_offset + tex_seed + alt_band, 7) == 0 && tex_level < 4) tex_level++;
+                        }
+
+                        if ((alt_band & 1) == 0) {
+                            if (imod(top_offset + tex_seed, 6) == 0 && tex_level > 1) tex_level--;
+                        } else {
+                            if (imod(top_offset + tex_seed + alt_band, 6) == 0 && tex_level < 4) tex_level++;
+                        }
+
+                        if (depth > 16.0f && top_offset > 2 && imod(top_offset + tex_seed + alt_band, 4) == 0 && tex_level > 1)
+                            tex_level--;
+                        if (contour && top_offset <= 1) tex_level = 4;
                     }
 
-                    if (((y + tex_seed) & 1) == 0 && tex_level > 1) tex_level--;
-                    if (depth > 16.0f && imod(y + x + tex_seed, 3) == 0 && tex_level > 1) tex_level--;
-                    if (ridge && imod(x - y + tex_seed, 4) == 0 && tex_level < 4) tex_level++;
-                    if (contour && y <= sy + 1) tex_level = 4;
                     tex_level = (int)clampf_local((float)tex_level, 1.0f, 4.0f);
                     shade_px(x, y, tex_level, terrain_phase);
                 }
+
                 ybuf[x] = sy;
             }
         }
@@ -1502,7 +1522,7 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
         draw_3d_line(shadow_left, shadow_right, cam, yaw, pitch, scene_scale);
     }
 
-    draw_wire_paper_plane(plane, plane_yaw, plane_pitch, plane_roll, 1.45f,
+    draw_wire_paper_plane(plane, plane_yaw, plane_pitch, plane_roll, 1.52f,
                           cam, yaw, pitch, scene_scale);
 }
 
