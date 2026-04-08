@@ -12,6 +12,7 @@
  */
 
 #include <fcntl.h>
+#include <errno.h>
 #if defined(__has_include)
 #if __has_include(<linux/i2c-dev.h>)
 #include <linux/i2c-dev.h>
@@ -28,8 +29,11 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#include "elevated_music.h"
 
 #define WIDTH             128
 #define HEIGHT            64
@@ -93,10 +97,19 @@ typedef struct {
     int sun_y;
 } ElevatedFrameCache;
 
+typedef struct {
+    pid_t pid;
+    char wav_path[32];
+    int have_wav;
+    int disabled;
+    struct timespec launched_at;
+} AudioPlayback;
+
 static int i2c_fd;
 static uint8_t fb[WIDTH * PAGES];
 static volatile int running = 1;
 static ElevatedFrameCache frame_cache;
+static AudioPlayback audio_playback = { -1, "", 0, 0, { 0, 0 } };
 
 static void bpx(int x, int y);
 
@@ -476,6 +489,229 @@ static void sleep_until(const struct timespec *next) {
 #else
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, next, NULL);
 #endif
+}
+
+static float monotonic_elapsed(const struct timespec *since) {
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (float)(now.tv_sec - since->tv_sec)
+         + (float)(now.tv_nsec - since->tv_nsec) / 1e9f;
+}
+
+static size_t demo_cycle_frames(void) {
+    size_t frames = (size_t)lroundf(DEMO_SECONDS * SAMPLE_RATE);
+
+    if (frames == 0 || frames > ELEVATED_MUSIC_TOTAL_SAMPLES)
+        frames = ELEVATED_MUSIC_TOTAL_SAMPLES;
+
+    return frames;
+}
+
+static int build_audio_cycle(int16_t **cycle_pcm, size_t *cycle_frames, float start_time) {
+    int16_t *full_pcm = NULL;
+    size_t full_frames = 0;
+    size_t frames = demo_cycle_frames();
+    size_t offset_frames;
+    int16_t *loop_pcm;
+    float wrapped_time = fmodf(start_time, DEMO_SECONDS);
+
+    if (wrapped_time < 0.0f) wrapped_time += DEMO_SECONDS;
+
+    *cycle_pcm = NULL;
+    *cycle_frames = 0;
+
+    if (!elevated_music_generate_pcm16(&full_pcm, &full_frames))
+        return 0;
+
+    if (full_frames < frames)
+        frames = full_frames;
+
+    offset_frames = (size_t)floorf(wrapped_time * SAMPLE_RATE);
+    if (frames > 0)
+        offset_frames %= frames;
+
+    loop_pcm = (int16_t *)malloc(frames * 2u * sizeof(*loop_pcm));
+    if (!loop_pcm) {
+        free(full_pcm);
+        return 0;
+    }
+
+    if (frames > 0) {
+        size_t first_chunk = frames - offset_frames;
+        memcpy(loop_pcm,
+               full_pcm + offset_frames * 2u,
+               first_chunk * 2u * sizeof(*loop_pcm));
+        if (offset_frames > 0) {
+            memcpy(loop_pcm + first_chunk * 2u,
+                   full_pcm,
+                   offset_frames * 2u * sizeof(*loop_pcm));
+        }
+    }
+
+    free(full_pcm);
+    *cycle_pcm = loop_pcm;
+    *cycle_frames = frames;
+    return 1;
+}
+
+static void write_le32(uint8_t *dst, uint32_t value) {
+    dst[0] = (uint8_t)(value & 0xFFu);
+    dst[1] = (uint8_t)((value >> 8) & 0xFFu);
+    dst[2] = (uint8_t)((value >> 16) & 0xFFu);
+    dst[3] = (uint8_t)((value >> 24) & 0xFFu);
+}
+
+static int write_full_fd(int fd, const void *data, size_t len) {
+    const uint8_t *ptr = (const uint8_t *)data;
+
+    while (len > 0) {
+        ssize_t written = write(fd, ptr, len);
+        if (written < 0) {
+            if (errno == EINTR) continue;
+            return 0;
+        }
+        ptr += (size_t)written;
+        len -= (size_t)written;
+    }
+
+    return 1;
+}
+
+static int write_wav_file(int fd, const int16_t *pcm, size_t frames) {
+    uint8_t header[44] = {
+        'R','I','F','F', 0,0,0,0, 'W','A','V','E',
+        'f','m','t',' ', 16,0,0,0, 1,0, 2,0,
+        0,0,0,0, 0,0,0,0, 4,0, 16,0,
+        'd','a','t','a', 0,0,0,0
+    };
+    uint32_t data_bytes = (uint32_t)(frames * 2u * sizeof(*pcm));
+
+    write_le32(header + 4, 36u + data_bytes);
+    write_le32(header + 24, (uint32_t)ELEVATED_MUSIC_SAMPLE_RATE);
+    write_le32(header + 28, (uint32_t)ELEVATED_MUSIC_SAMPLE_RATE * 4u);
+    write_le32(header + 40, data_bytes);
+
+    return write_full_fd(fd, header, sizeof(header))
+        && write_full_fd(fd, pcm, data_bytes);
+}
+
+static int create_audio_wav(AudioPlayback *audio, const int16_t *pcm, size_t frames) {
+    static const char template_path[] = "/tmp/elevated-audio-XXXXXX";
+    int fd;
+    size_t n = sizeof(template_path);
+
+    memcpy(audio->wav_path, template_path, n);
+    fd = mkstemp(audio->wav_path);
+    if (fd < 0) {
+        audio->wav_path[0] = '\0';
+        return 0;
+    }
+
+    if (!write_wav_file(fd, pcm, frames)) {
+        close(fd);
+        unlink(audio->wav_path);
+        audio->wav_path[0] = '\0';
+        return 0;
+    }
+
+    close(fd);
+    audio->have_wav = 1;
+    return 1;
+}
+
+static pid_t spawn_audio_player(const char *wav_path) {
+    int err_pipe[2];
+    int exec_errno = 0;
+    pid_t pid;
+    ssize_t nread;
+    int flags;
+
+    if (pipe(err_pipe) != 0)
+        return -1;
+
+    flags = fcntl(err_pipe[1], F_GETFD);
+    if (flags >= 0)
+        (void)fcntl(err_pipe[1], F_SETFD, flags | FD_CLOEXEC);
+
+    pid = fork();
+    if (pid < 0) {
+        close(err_pipe[0]);
+        close(err_pipe[1]);
+        return -1;
+    }
+
+    if (pid == 0) {
+        close(err_pipe[0]);
+        execlp("aplay", "aplay", "-q", wav_path, (char *)NULL);
+        exec_errno = errno;
+        (void)write(err_pipe[1], &exec_errno, sizeof(exec_errno));
+        _exit(127);
+    }
+
+    close(err_pipe[1]);
+    do {
+        nread = read(err_pipe[0], &exec_errno, sizeof(exec_errno));
+    } while (nread < 0 && errno == EINTR);
+    close(err_pipe[0]);
+
+    if (nread > 0) {
+        (void)waitpid(pid, NULL, 0);
+        errno = exec_errno;
+        return -1;
+    }
+
+    return pid;
+}
+
+static int launch_audio_playback(AudioPlayback *audio) {
+    pid_t pid;
+
+    if (audio->disabled || !audio->have_wav)
+        return 0;
+
+    pid = spawn_audio_player(audio->wav_path);
+    if (pid < 0)
+        return 0;
+
+    audio->pid = pid;
+    clock_gettime(CLOCK_MONOTONIC, &audio->launched_at);
+    return 1;
+}
+
+static void poll_audio_playback(AudioPlayback *audio) {
+    int status;
+    pid_t waited;
+
+    if (audio->disabled || audio->pid <= 0)
+        return;
+
+    waited = waitpid(audio->pid, &status, WNOHANG);
+    if (waited != audio->pid)
+        return;
+
+    audio->pid = -1;
+    if (monotonic_elapsed(&audio->launched_at) < 1.0f) {
+        audio->disabled = 1;
+        return;
+    }
+
+    if (!launch_audio_playback(audio))
+        audio->disabled = 1;
+}
+
+static void cleanup_audio_playback(AudioPlayback *audio) {
+    if (audio->pid > 0) {
+        (void)kill(audio->pid, SIGTERM);
+        (void)waitpid(audio->pid, NULL, 0);
+        audio->pid = -1;
+    }
+
+    if (audio->have_wav) {
+        unlink(audio->wav_path);
+        audio->wav_path[0] = '\0';
+        audio->have_wav = 0;
+    }
 }
 
 static void px(int x, int y) {
@@ -928,6 +1164,29 @@ int main(int argc, char *argv[]) {
     signal(SIGTERM, stop);
 
     {
+        int16_t *cycle_pcm = NULL;
+        size_t cycle_frames = 0;
+
+        audio_playback.pid = -1;
+        audio_playback.wav_path[0] = '\0';
+        audio_playback.have_wav = 0;
+        audio_playback.disabled = 0;
+
+        if (build_audio_cycle(&cycle_pcm, &cycle_frames, start_time)
+            && create_audio_wav(&audio_playback, cycle_pcm, cycle_frames)) {
+            if (!launch_audio_playback(&audio_playback)) {
+                audio_playback.disabled = 1;
+                if (!daemonize)
+                    fprintf(stderr, "warning: audio playback unavailable: %s\n", strerror(errno));
+            }
+        } else if (!daemonize) {
+            fprintf(stderr, "warning: failed to generate Elevated soundtrack\n");
+        }
+
+        free(cycle_pcm);
+    }
+
+    {
         long frame_ns = 1000000000L / PDM_SUBFRAME_HZ;
         struct timespec next, prev;
         float sim_t = start_time;
@@ -948,8 +1207,14 @@ int main(int argc, char *argv[]) {
             dt = (float)(now.tv_sec - prev.tv_sec) + (float)(now.tv_nsec - prev.tv_nsec) / 1e9f;
             if (dt > 1.0f) dt = 1.0f;
             prev = now;
-            sim_t += dt;
-            if (sim_t >= DEMO_SECONDS) sim_t = fmodf(sim_t, DEMO_SECONDS);
+
+            poll_audio_playback(&audio_playback);
+            if (!audio_playback.disabled && audio_playback.pid > 0) {
+                sim_t = fmodf(start_time + monotonic_elapsed(&audio_playback.launched_at), DEMO_SECONDS);
+            } else {
+                sim_t += dt;
+                if (sim_t >= DEMO_SECONDS) sim_t = fmodf(sim_t, DEMO_SECONDS);
+            }
 
             subframe_tick = (unsigned)floorf(sim_t * PDM_SUBFRAME_HZ);
             motion_tick = subframe_tick / SUBFRAMES_PER_MOTION_FRAME;
@@ -972,6 +1237,8 @@ int main(int argc, char *argv[]) {
             sleep_until(&next);
         }
     }
+
+    cleanup_audio_playback(&audio_playback);
 
     memset(fb, 0, sizeof(fb));
     flush();
