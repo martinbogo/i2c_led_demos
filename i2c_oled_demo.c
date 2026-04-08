@@ -198,9 +198,11 @@ static void stop(int sig) { (void)sig; running = 0; }
 
 static void usage(const char *argv0) {
     fprintf(stderr,
-            "usage: %s [-d] [-s 1-%d] [-h|-?]\n"
+            "usage: %s [-d] [-s 1-%d] [--dump-scene4 FILE] [-h|-?]\n"
             "  -d      run as a daemon\n"
             "  -s N    start on scene N (1-%d)\n"
+            "  --dump-scene4 FILE\n"
+            "          render a scene 4 contact sheet to FILE (PGM) and exit\n"
             "  -h, -?  show this help message\n",
             argv0, SCENE_COUNT, SCENE_COUNT);
 }
@@ -407,6 +409,11 @@ static void px(int x, int y) {
 
 static void bpx(int x, int y) {
     px(x, y + BLUE_Y);
+}
+
+static int fb_on(int x, int y) {
+    if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT) return 0;
+    return (fb[x + (y / 8) * WIDTH] >> (y & 7)) & 1;
 }
 
 static void fill_rect(int x0, int y0, int x1, int y1) {
@@ -1821,15 +1828,71 @@ static void draw_scene(int scene_idx, float scene_t, unsigned phase) {
     }
 }
 
+static int write_scene4_contact_sheet(const char *path) {
+    enum { cols = 4, rows = 2, frames = cols * rows };
+    const int out_w = WIDTH * cols;
+    const int out_h = BLUE_H * rows;
+    uint8_t *img = calloc((size_t)out_w * (size_t)out_h, 1);
+    FILE *f;
+
+    if (!img) {
+        perror("calloc");
+        return 0;
+    }
+
+    for (int i = 0; i < frames; i++) {
+        float u = frames > 1 ? (float)i / (float)(frames - 1) : 0.0f;
+        float scene_t = u * (SCENE_SECONDS - 0.001f);
+        int ox = (i % cols) * WIDTH;
+        int oy = (i / cols) * BLUE_H;
+
+        memset(fb, 0, sizeof(fb));
+        draw_scene(3, scene_t, (unsigned)lroundf(scene_t * DEMO_FPS));
+
+        for (int y = 0; y < BLUE_H; y++) {
+            for (int x = 0; x < WIDTH; x++) {
+                img[(size_t)(oy + y) * (size_t)out_w + (size_t)(ox + x)] =
+                    fb_on(x, y + BLUE_Y) ? 255 : 0;
+            }
+        }
+    }
+
+    f = fopen(path, "wb");
+    if (!f) {
+        perror(path);
+        free(img);
+        return 0;
+    }
+
+    fprintf(f, "P5\n# scene4-contact-sheet\n%d %d\n255\n", out_w, out_h);
+    if (fwrite(img, 1, (size_t)out_w * (size_t)out_h, f) != (size_t)out_w * (size_t)out_h) {
+        perror("fwrite");
+        fclose(f);
+        free(img);
+        return 0;
+    }
+
+    fclose(f);
+    free(img);
+    return 1;
+}
+
 int main(int argc, char *argv[]) {
     int daemonize = 0;
     int start_scene_idx = 0;
+    const char *dump_scene4_path = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0) {
             daemonize = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "-?") == 0) {
             usage(argv[0]);
             return 0;
+        } else if (strcmp(argv[i], "--dump-scene4") == 0) {
+            if (++i >= argc) {
+                usage(argv[0]);
+                return 1;
+            }
+            dump_scene4_path = argv[i];
         } else if (strcmp(argv[i], "-s") == 0) {
             if (++i >= argc || !parse_scene_number(argv[i], &start_scene_idx)) {
                 usage(argv[0]);
@@ -1840,6 +1903,9 @@ int main(int argc, char *argv[]) {
             return 1;
         }
     }
+
+    if (dump_scene4_path)
+        return write_scene4_contact_sheet(dump_scene4_path) ? 0 : 1;
 
 #if HAVE_WOZ_PDM_HEADER
     if (!pdm_prepare_embedded_asset()) {
