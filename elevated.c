@@ -597,12 +597,12 @@ static int write_wav_file(int fd, const int16_t *pcm, size_t frames) {
 }
 
 static int create_audio_wav(AudioPlayback *audio, const int16_t *pcm, size_t frames) {
-    static const char template_path[] = "/tmp/elevated-audio-XXXXXX";
+    static const char template_path[] = "/tmp/elevated-audio-XXXXXX.wav";
     int fd;
     size_t n = sizeof(template_path);
 
     memcpy(audio->wav_path, template_path, n);
-    fd = mkstemp(audio->wav_path);
+    fd = mkstemps(audio->wav_path, 4);
     if (fd < 0) {
         audio->wav_path[0] = '\0';
         return 0;
@@ -643,7 +643,7 @@ static pid_t spawn_audio_player(const char *wav_path) {
 
     if (pid == 0) {
         close(err_pipe[0]);
-        execlp("aplay", "aplay", "-q", wav_path, (char *)NULL);
+        execlp("aplay", "aplay", "-q", "-t", "wav", wav_path, (char *)NULL);
         exec_errno = errno;
         (void)write(err_pipe[1], &exec_errno, sizeof(exec_errno));
         _exit(127);
