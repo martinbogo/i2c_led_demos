@@ -801,6 +801,79 @@ static int terrain_band_level(float depth, float light, float biome) {
     return (int)clampf_local((float)level, 1.0f, 4.0f);
 }
 
+static float terrain_level_luma(int level) {
+    switch (level) {
+        case 1: return 0.24f;
+        case 2: return 0.39f;
+        case 3: return 0.56f;
+        default: return 0.74f;
+    }
+}
+
+static float terrain_sunlight(float slope_x, float slope_z) {
+    float nx = -slope_x;
+    float ny = 1.0f;
+    float nz = -slope_z;
+    float inv_len = 1.0f / sqrtf(nx * nx + ny * ny + nz * nz);
+    const float sun_x = -0.58f;
+    const float sun_y = 0.74f;
+    const float sun_z = -0.34f;
+
+    nx *= inv_len;
+    ny *= inv_len;
+    nz *= inv_len;
+
+    return clampf_local(nx * sun_x + ny * sun_y + nz * sun_z, 0.0f, 1.0f);
+}
+
+static uint8_t terrain_luma_byte(float luma) {
+    return (uint8_t)lroundf(clampf_local(luma, 0.0f, 1.0f) * 255.0f);
+}
+
+static void draw_terrain_luma_floyd_steinberg(const uint8_t *terrain_luma) {
+    float work[WIDTH * BLUE_H];
+
+    for (int i = 0; i < WIDTH * BLUE_H; i++) work[i] = (float)terrain_luma[i];
+
+    for (int y = 0; y < BLUE_H; y++) {
+        int ltr = !(y & 1);
+
+        if (ltr) {
+            for (int x = 0; x < WIDTH; x++) {
+                int idx = y * WIDTH + x;
+                float old_px = work[idx];
+                float new_px = old_px >= 128.0f ? 255.0f : 0.0f;
+                float err = old_px - new_px;
+
+                if (new_px > 0.0f) bpx(x, y);
+
+                if (x + 1 < WIDTH) work[idx + 1] += err * (7.0f / 16.0f);
+                if (y + 1 < BLUE_H) {
+                    if (x > 0) work[idx + WIDTH - 1] += err * (3.0f / 16.0f);
+                    work[idx + WIDTH] += err * (5.0f / 16.0f);
+                    if (x + 1 < WIDTH) work[idx + WIDTH + 1] += err * (1.0f / 16.0f);
+                }
+            }
+        } else {
+            for (int x = WIDTH - 1; x >= 0; x--) {
+                int idx = y * WIDTH + x;
+                float old_px = work[idx];
+                float new_px = old_px >= 128.0f ? 255.0f : 0.0f;
+                float err = old_px - new_px;
+
+                if (new_px > 0.0f) bpx(x, y);
+
+                if (x > 0) work[idx - 1] += err * (7.0f / 16.0f);
+                if (y + 1 < BLUE_H) {
+                    if (x + 1 < WIDTH) work[idx + WIDTH + 1] += err * (3.0f / 16.0f);
+                    work[idx + WIDTH] += err * (5.0f / 16.0f);
+                    if (x > 0) work[idx + WIDTH - 1] += err * (1.0f / 16.0f);
+                }
+            }
+        }
+    }
+}
+
 static float paper_plane_loop_u(float scene_t) {
     return clampf_local((scene_t - 19.5f) / 6.6f, 0.0f, 1.0f);
 }
@@ -1286,7 +1359,7 @@ static void draw_scene_tank_wars(float scene_t) {
 
 static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
     int ybuf[WIDTH];
-    unsigned terrain_phase = 0;
+    uint8_t terrain_luma[WIDTH * BLUE_H];
     vec3_t plane = paper_plane_path(scene_t);
     float plane_yaw, plane_pitch, plane_roll;
     paper_plane_attitude(scene_t, &plane_yaw, &plane_pitch, &plane_roll);
@@ -1301,6 +1374,7 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
     float horizon_y = 14.0f + pitch * 22.0f;
 
     for (int x = 0; x < WIDTH; x++) ybuf[x] = BLUE_H - 1;
+    memset(terrain_luma, 0, sizeof(terrain_luma));
 
     for (float depth = 58.0f; depth > 1.0f; depth -= 0.45f) {
         for (int x = 0; x < WIDTH; x++) {
@@ -1309,58 +1383,52 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
             float wz = cam.z + cosf(ray) * depth;
             float h, slope_x, slope_z;
             float biome;
-            float light;
-            int alt_band;
+            float sun_light;
+            float ridge_strength;
             int ridge;
             int sy;
-            int tex_seed;
             int contour;
-            int level;
+            int band_level;
+            float base_luma;
+            float surface_luma;
 
             terrain_sample(wx, wz, &h, &slope_x, &slope_z);
             biome = clampf_local(0.5f
                                + 0.28f * sinf(wx * 0.045f + wz * 0.018f)
                                + 0.22f * cosf(wz * 0.038f - wx * 0.021f),
                                0.0f, 1.0f);
-            light = clampf_local(0.62f - slope_x * 0.95f + slope_z * 0.55f, 0.0f, 1.0f);
-            alt_band = imod((int)floorf((h + 12.0f) * 0.45f), 5);
-            ridge = fabsf(slope_x) + fabsf(slope_z) > 0.70f;
+            sun_light = terrain_sunlight(slope_x, slope_z);
+            ridge_strength = clampf_local((fabsf(slope_x) + fabsf(slope_z) - 0.52f) / 0.75f, 0.0f, 1.0f);
+            ridge = ridge_strength > 0.30f;
             sy = (int)lroundf(horizon_y + (cam_h - h) * 24.0f / depth);
-            level = terrain_band_level(depth, light, biome);
-            tex_seed = imod((int)floorf(wx * 0.45f) + (int)floorf(wz * 0.35f), 7);
+            band_level = terrain_band_level(depth, sun_light, biome);
+            base_luma = terrain_level_luma(band_level);
+            surface_luma = mixf_local(base_luma * 0.72f, 0.18f + sun_light * 0.70f, 0.58f);
+            surface_luma += (biome - 0.5f) * 0.06f;
+            surface_luma += ridge_strength * 0.05f;
+            surface_luma = clampf_local(surface_luma, 0.12f, 0.88f);
             contour = fabsf(fractf_local((h + depth * 0.18f) * 0.35f) - 0.5f) < 0.10f;
 
             if (sy < 0) sy = 0;
             if (sy < ybuf[x]) {
+                int shell_rows = depth < 10.0f ? 3 : depth < 22.0f ? 2 : 1;
+
                 for (int y = sy; y <= ybuf[x]; y++) {
-                    int tex_level = level;
                     int top_offset = y - sy;
+                    float shell_t = 1.0f - clampf_local((float)top_offset / (float)shell_rows, 0.0f, 1.0f);
+                    float face_t = smoothstep_local(clampf_local((float)top_offset / 7.0f, 0.0f, 1.0f));
+                    float luma = mixf_local(surface_luma,
+                                            base_luma * 0.24f + 0.05f + (1.0f - ridge_strength) * 0.03f,
+                                            face_t);
 
-                    if (top_offset == 0) {
-                        tex_level = 4;
-                    } else if (ridge && top_offset <= 1 && tex_level < 4) {
-                        tex_level++;
-                    } else {
-                        if (biome > 0.66f) {
-                            if (imod(top_offset + tex_seed + alt_band, 5) == 0 && tex_level < 4) tex_level++;
-                        } else if (biome < 0.34f) {
-                            if (imod(top_offset + tex_seed, 4) == 0 && tex_level > 1) tex_level--;
-                            if (imod(top_offset + tex_seed + alt_band, 7) == 0 && tex_level < 4) tex_level++;
-                        }
+                    luma += shell_t * (0.08f * sun_light + 0.04f * ridge_strength);
 
-                        if ((alt_band & 1) == 0) {
-                            if (imod(top_offset + tex_seed, 6) == 0 && tex_level > 1) tex_level--;
-                        } else {
-                            if (imod(top_offset + tex_seed + alt_band, 6) == 0 && tex_level < 4) tex_level++;
-                        }
+                    if (ridge && top_offset == 0) luma += 0.10f;
+                    if (contour && top_offset == 0) luma = fmaxf(luma, 0.66f);
+                    if (top_offset > 4) luma -= 0.06f * smoothstep_local(clampf_local((float)(top_offset - 4) / 5.0f, 0.0f, 1.0f));
 
-                        if (depth > 16.0f && top_offset > 2 && imod(top_offset + tex_seed + alt_band, 4) == 0 && tex_level > 1)
-                            tex_level--;
-                        if (contour && top_offset <= 1) tex_level = 4;
-                    }
-
-                    tex_level = (int)clampf_local((float)tex_level, 1.0f, 4.0f);
-                    shade_px(x, y, tex_level, terrain_phase);
+                    luma = floorf(clampf_local(luma, 0.0f, 1.0f) * 5.0f + 0.5f) / 5.0f;
+                    terrain_luma[y * WIDTH + x] = terrain_luma_byte(luma);
                 }
 
                 ybuf[x] = sy;
@@ -1368,8 +1436,11 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
         }
     }
 
+    draw_terrain_luma_floyd_steinberg(terrain_luma);
+
     for (int x = 1; x < WIDTH; x++) {
-        if (abs(ybuf[x] - ybuf[x - 1]) < 7)
+        if (abs(ybuf[x] - ybuf[x - 1]) < 7 &&
+            (ybuf[x] > (int)horizon_y + 1 || ybuf[x - 1] > (int)horizon_y + 1))
             bline(x - 1, ybuf[x - 1], x, ybuf[x]);
     }
 
