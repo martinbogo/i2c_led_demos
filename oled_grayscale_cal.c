@@ -1,0 +1,601 @@
+/*
+ * Interactive OLED grayscale calibration utility for the split yellow/blue SSD1306.
+ *
+ * Purpose:
+ * - let a human operator tune gamma, gain, bias, and 16 anchor points in real time
+ * - preview the current temporal PDM grayscale rendering directly on the OLED
+ * - emit a report with both anchor points and an interpolated 256-entry LUT
+ *
+ * Controls:
+ *   q        quit and save report
+ *   p        save report immediately
+ *   ?        print controls to the terminal
+ *   a / d    select previous / next anchor
+ *   j / k    decrease / increase selected anchor by 1
+ *   J / K    decrease / increase selected anchor by 4
+ *   [ / ]    decrease / increase gamma by 0.05 and rebuild anchors
+ *   - / =    decrease / increase gain by 0.05 and rebuild anchors
+ *   , / .    decrease / increase bias by 1 code value and rebuild anchors
+ *   r        rebuild anchors from current gamma / gain / bias
+ */
+
+#include <errno.h>
+#include <fcntl.h>
+#if defined(__has_include)
+#if __has_include(<linux/i2c-dev.h>)
+#include <linux/i2c-dev.h>
+#endif
+#endif
+#ifndef I2C_SLAVE
+#define I2C_SLAVE 0x0703
+#endif
+#include <math.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/select.h>
+#include <sys/types.h>
+#include <termios.h>
+#include <time.h>
+#include <unistd.h>
+
+#define WIDTH             128
+#define HEIGHT            64
+#define PAGES             (HEIGHT / 8)
+#define ADDR              0x3C
+#define YELLOW_H          16
+#define BLUE_Y            16
+#define BLUE_H            48
+#define BLUE_START_PAGE   (BLUE_Y / 8)
+#define TARGET_FPS        90
+#define PDM_PHASES        3
+#define I2C_CHUNK         255
+#define CAL_ANCHORS       16
+#define REPORT_FILE       "oled_gamma_calibration.txt"
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+typedef struct {
+    float gamma;
+    float gain;
+    int bias;
+    int selected;
+    uint8_t anchors[CAL_ANCHORS];
+    uint8_t lut[256];
+} calibration_t;
+
+static const uint8_t bayer8x8[8][8] = {
+    { 0, 48, 12, 60,  3, 51, 15, 63 },
+    {32, 16, 44, 28, 35, 19, 47, 31 },
+    { 8, 56,  4, 52, 11, 59,  7, 55 },
+    {40, 24, 36, 20, 43, 27, 39, 23 },
+    { 2, 50, 14, 62,  1, 49, 13, 61 },
+    {34, 18, 46, 30, 33, 17, 45, 29 },
+    {10, 58,  6, 54,  9, 57,  5, 53 },
+    {42, 26, 38, 22, 41, 25, 37, 21 },
+};
+
+static const uint8_t temporal_order[PDM_PHASES] = { 0, 2, 1 };
+
+static const uint8_t font5x7[][5] = {
+    {0x00,0x00,0x00,0x00,0x00},{0x00,0x00,0x5F,0x00,0x00},
+    {0x00,0x07,0x00,0x07,0x00},{0x14,0x7F,0x14,0x7F,0x14},
+    {0x24,0x2A,0x7F,0x2A,0x12},{0x23,0x13,0x08,0x64,0x62},
+    {0x36,0x49,0x55,0x22,0x50},{0x00,0x05,0x03,0x00,0x00},
+    {0x00,0x1C,0x22,0x41,0x00},{0x00,0x41,0x22,0x1C,0x00},
+    {0x08,0x2A,0x1C,0x2A,0x08},{0x08,0x08,0x3E,0x08,0x08},
+    {0x00,0x50,0x30,0x00,0x00},{0x08,0x08,0x08,0x08,0x08},
+    {0x00,0x60,0x60,0x00,0x00},{0x20,0x10,0x08,0x04,0x02},
+    {0x3E,0x51,0x49,0x45,0x3E},{0x00,0x42,0x7F,0x40,0x00},
+    {0x42,0x61,0x51,0x49,0x46},{0x21,0x41,0x45,0x4B,0x31},
+    {0x18,0x14,0x12,0x7F,0x10},{0x27,0x45,0x45,0x45,0x39},
+    {0x3C,0x4A,0x49,0x49,0x30},{0x01,0x71,0x09,0x05,0x03},
+    {0x36,0x49,0x49,0x49,0x36},{0x06,0x49,0x49,0x29,0x1E},
+    {0x00,0x36,0x36,0x00,0x00},{0x00,0x56,0x36,0x00,0x00},
+    {0x00,0x08,0x14,0x22,0x41},{0x14,0x14,0x14,0x14,0x14},
+    {0x41,0x22,0x14,0x08,0x00},{0x02,0x01,0x51,0x09,0x06},
+    {0x32,0x49,0x79,0x41,0x3E},{0x7E,0x11,0x11,0x11,0x7E},
+    {0x7F,0x49,0x49,0x49,0x36},{0x3E,0x41,0x41,0x41,0x22},
+    {0x7F,0x41,0x41,0x22,0x1C},{0x7F,0x49,0x49,0x49,0x41},
+    {0x7F,0x09,0x09,0x01,0x01},{0x3E,0x41,0x41,0x51,0x32},
+    {0x7F,0x08,0x08,0x08,0x7F},{0x00,0x41,0x7F,0x41,0x00},
+    {0x20,0x40,0x41,0x3F,0x01},{0x7F,0x08,0x14,0x22,0x41},
+    {0x7F,0x40,0x40,0x40,0x40},{0x7F,0x02,0x04,0x02,0x7F},
+    {0x7F,0x04,0x08,0x10,0x7F},{0x3E,0x41,0x41,0x41,0x3E},
+    {0x7F,0x09,0x09,0x09,0x06},{0x3E,0x41,0x51,0x21,0x5E},
+    {0x7F,0x09,0x19,0x29,0x46},{0x46,0x49,0x49,0x49,0x31},
+    {0x01,0x01,0x7F,0x01,0x01},{0x3F,0x40,0x40,0x40,0x3F},
+    {0x1F,0x20,0x40,0x20,0x1F},{0x7F,0x20,0x18,0x20,0x7F},
+    {0x63,0x14,0x08,0x14,0x63},{0x03,0x04,0x78,0x04,0x03},
+    {0x61,0x51,0x49,0x45,0x43},{0x00,0x00,0x7F,0x41,0x41},
+    {0x02,0x04,0x08,0x10,0x20},{0x41,0x41,0x7F,0x00,0x00},
+    {0x04,0x02,0x01,0x02,0x04},{0x40,0x40,0x40,0x40,0x40},
+    {0x00,0x01,0x02,0x04,0x00},{0x20,0x54,0x54,0x54,0x78},
+    {0x7F,0x48,0x44,0x44,0x38},{0x38,0x44,0x44,0x44,0x20},
+    {0x38,0x44,0x44,0x48,0x7F},{0x38,0x54,0x54,0x54,0x18},
+    {0x08,0x7E,0x09,0x01,0x02},{0x08,0x14,0x54,0x54,0x3C},
+    {0x7F,0x08,0x04,0x04,0x78},{0x00,0x44,0x7D,0x40,0x00},
+    {0x20,0x40,0x44,0x3D,0x00},{0x00,0x7F,0x10,0x28,0x44},
+    {0x00,0x41,0x7F,0x40,0x00},{0x7C,0x04,0x18,0x04,0x78},
+    {0x7C,0x08,0x04,0x04,0x78},{0x38,0x44,0x44,0x44,0x38},
+    {0x7C,0x14,0x14,0x14,0x08},{0x08,0x14,0x14,0x18,0x7C},
+    {0x7C,0x08,0x04,0x04,0x08},{0x48,0x54,0x54,0x54,0x20},
+    {0x04,0x3F,0x44,0x40,0x20},{0x3C,0x40,0x40,0x20,0x7C},
+    {0x1C,0x20,0x40,0x20,0x1C},{0x3C,0x40,0x30,0x40,0x3C},
+    {0x44,0x28,0x10,0x28,0x44},{0x0C,0x50,0x50,0x50,0x3C},
+    {0x44,0x64,0x54,0x4C,0x44},{0x00,0x08,0x36,0x41,0x00},
+    {0x00,0x00,0x7F,0x00,0x00},{0x00,0x41,0x36,0x08,0x00},
+    {0x08,0x08,0x2A,0x1C,0x08},
+};
+
+static int i2c_fd = -1;
+static uint8_t fb[WIDTH * PAGES];
+static volatile int running = 1;
+static struct termios saved_termios;
+static int termios_valid = 0;
+static int saved_flags = -1;
+
+static int clampi(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static float clampf_local(float v, float lo, float hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static void stop(int sig) {
+    (void)sig;
+    running = 0;
+}
+
+static void usage(const char *argv0) {
+    fprintf(stderr,
+            "usage: %s [-h|-?]\n"
+            "Interactive grayscale calibration for the split yellow/blue SSD1306.\n"
+            "Writes %s on exit and shows runtime controls in the terminal.\n"
+            "  -h, -?  show this help message\n",
+            argv0, REPORT_FILE);
+}
+
+static void restore_terminal(void) {
+    if (termios_valid) tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
+    if (saved_flags != -1) fcntl(STDIN_FILENO, F_SETFL, saved_flags);
+}
+
+static int enter_raw_terminal(void) {
+    if (!isatty(STDIN_FILENO)) return -1;
+    if (tcgetattr(STDIN_FILENO, &saved_termios) != 0) return -1;
+    termios_valid = 1;
+    saved_flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+
+    struct termios raw = saved_termios;
+    raw.c_lflag &= (tcflag_t)~(ICANON | ECHO);
+    raw.c_cc[VMIN] = 0;
+    raw.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0) return -1;
+    if (saved_flags != -1) fcntl(STDIN_FILENO, F_SETFL, saved_flags | O_NONBLOCK);
+    atexit(restore_terminal);
+    return 0;
+}
+
+static void init_display(void) {
+    uint8_t cmds[] = {
+        0x00, 0xAE, 0xD5, 0xF0, 0xA8, 0x3F, 0xD3, 0x00, 0x40,
+        0x8D, 0x14, 0x20, 0x00, 0xA1, 0xC8, 0xDA, 0x12,
+        0x81, 0x6F, 0xD9, 0xF1, 0xDB, 0x40, 0xA4, 0xA6, 0xAF
+    };
+    ssize_t written = write(i2c_fd, cmds, sizeof(cmds));
+    (void)written;
+}
+
+static void flush(void) {
+    uint8_t ac[] = {0x00, 0x21, 0, WIDTH - 1, 0x22, 0, PAGES - 1};
+    ssize_t written = write(i2c_fd, ac, sizeof(ac));
+    (void)written;
+    for (int i = 0; i < WIDTH * PAGES; i += I2C_CHUNK) {
+        uint8_t buf[I2C_CHUNK + 1];
+        buf[0] = 0x40;
+        int len = WIDTH * PAGES - i;
+        if (len > I2C_CHUNK) len = I2C_CHUNK;
+        memcpy(buf + 1, fb + i, len);
+        written = write(i2c_fd, buf, len + 1);
+        (void)written;
+    }
+}
+
+static void sleep_until(const struct timespec *next) {
+#if defined(__APPLE__) || !defined(TIMER_ABSTIME)
+    struct timespec now, delta;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    delta.tv_sec = next->tv_sec - now.tv_sec;
+    delta.tv_nsec = next->tv_nsec - now.tv_nsec;
+    if (delta.tv_nsec < 0) {
+        delta.tv_nsec += 1000000000L;
+        delta.tv_sec -= 1;
+    }
+    if (delta.tv_sec > 0 || (delta.tv_sec == 0 && delta.tv_nsec > 0))
+        nanosleep(&delta, NULL);
+#else
+    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, next, NULL);
+#endif
+}
+
+static void px(int x, int y) {
+    if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT)
+        fb[x + (y / 8) * WIDTH] |= (uint8_t)(1u << (y & 7));
+}
+
+static void bpx(int x, int y) {
+    px(x, y + BLUE_Y);
+}
+
+static void draw_line(int x0, int y0, int x1, int y1) {
+    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+
+    for (;;) {
+        px(x0, y0);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+static void bline(int x0, int y0, int x1, int y1) {
+    draw_line(x0, y0 + BLUE_Y, x1, y1 + BLUE_Y);
+}
+
+static void draw_char(int x, int y, char c) {
+    if (c < 32 || c > 126) c = '?';
+    const uint8_t *g = font5x7[c - 32];
+    for (int col = 0; col < 5; col++) {
+        uint8_t bits = g[col];
+        for (int row = 0; row < 7; row++)
+            if (bits & (1u << row))
+                px(x + col, y + row);
+    }
+}
+
+static void draw_str(int x, int y, const char *s) {
+    while (*s) {
+        draw_char(x, y, *s++);
+        x += 6;
+    }
+}
+
+static void print_controls(void) {
+    fprintf(stderr,
+            "\nOLED grayscale calibration controls\n"
+            "  q        quit and save report\n"
+            "  p        save report immediately\n"
+            "  ?        show this help\n"
+            "  a / d    select previous / next anchor\n"
+            "  j / k    decrease / increase selected anchor by 1\n"
+            "  J / K    decrease / increase selected anchor by 4\n"
+            "  [ / ]    decrease / increase gamma by 0.05 and rebuild\n"
+            "  - / =    decrease / increase gain by 0.05 and rebuild\n"
+            "  , / .    decrease / increase bias by 1 and rebuild\n"
+            "  r        rebuild anchors from current gamma / gain / bias\n\n");
+}
+
+static void print_status(const calibration_t *cal) {
+    fprintf(stderr,
+            "\rG %.2f  C %.2f  B %+03d  A %02d/%02d = %03u        ",
+            cal->gamma, cal->gain, cal->bias,
+            cal->selected + 1, CAL_ANCHORS, cal->anchors[cal->selected]);
+    fflush(stderr);
+}
+
+static void rebuild_lut(calibration_t *cal) {
+    for (int x = 0; x < 256; x++) {
+        float pos = (float)x * (float)(CAL_ANCHORS - 1) / 255.0f;
+        int idx = (int)floorf(pos);
+        float t = pos - (float)idx;
+        if (idx >= CAL_ANCHORS - 1) {
+            cal->lut[x] = cal->anchors[CAL_ANCHORS - 1];
+        } else {
+            float v = cal->anchors[idx] + (cal->anchors[idx + 1] - cal->anchors[idx]) * t;
+            cal->lut[x] = (uint8_t)clampi((int)lroundf(v), 0, 255);
+        }
+    }
+    for (int x = 1; x < 256; x++) {
+        if (cal->lut[x] < cal->lut[x - 1]) cal->lut[x] = cal->lut[x - 1];
+    }
+}
+
+static void rebuild_anchors_from_curve(calibration_t *cal) {
+    for (int i = 0; i < CAL_ANCHORS; i++) {
+        float x = (float)i / (float)(CAL_ANCHORS - 1);
+        float y = powf(clampf_local(x, 0.0f, 1.0f), cal->gamma);
+        int v = (int)lroundf(y * cal->gain * 255.0f) + cal->bias;
+        cal->anchors[i] = (uint8_t)clampi(v, 0, 255);
+    }
+    cal->anchors[0] = 0;
+    for (int i = 1; i < CAL_ANCHORS; i++) {
+        if (cal->anchors[i] < cal->anchors[i - 1]) cal->anchors[i] = cal->anchors[i - 1];
+    }
+    cal->anchors[CAL_ANCHORS - 1] = 255;
+    rebuild_lut(cal);
+}
+
+static void adjust_anchor(calibration_t *cal, int delta) {
+    int idx = cal->selected;
+    int lo = idx == 0 ? 0 : cal->anchors[idx - 1];
+    int hi = idx == CAL_ANCHORS - 1 ? 255 : cal->anchors[idx + 1];
+    int v = cal->anchors[idx] + delta;
+    cal->anchors[idx] = (uint8_t)clampi(v, lo, hi);
+    rebuild_lut(cal);
+}
+
+static int save_report(const calibration_t *cal) {
+    FILE *fp = fopen(REPORT_FILE, "w");
+    if (!fp) return -1;
+
+    fprintf(fp, "# OLED grayscale calibration report\n");
+    fprintf(fp, "gamma=%.2f\n", cal->gamma);
+    fprintf(fp, "gain=%.2f\n", cal->gain);
+    fprintf(fp, "bias=%d\n", cal->bias);
+    fprintf(fp, "anchor_count=%d\n\n", CAL_ANCHORS);
+
+    fprintf(fp, "anchors16 = {");
+    for (int i = 0; i < CAL_ANCHORS; i++) {
+        fprintf(fp, "%s%u", i ? ", " : "", cal->anchors[i]);
+    }
+    fprintf(fp, "};\n\n");
+
+    fprintf(fp, "lut256 = {\n");
+    for (int i = 0; i < 256; i++) {
+        if ((i % 16) == 0) fprintf(fp, "    ");
+        fprintf(fp, "%3u", cal->lut[i]);
+        if (i != 255) fprintf(fp, ", ");
+        if ((i % 16) == 15) fprintf(fp, "\n");
+    }
+    fprintf(fp, "};\n\n");
+
+    fprintf(fp, "static const unsigned char oled_gray_anchors[%d] = {", CAL_ANCHORS);
+    for (int i = 0; i < CAL_ANCHORS; i++) fprintf(fp, "%s%u", i ? ", " : "", cal->anchors[i]);
+    fprintf(fp, "};\n\n");
+
+    fprintf(fp, "static const unsigned char oled_gray_lut[256] = {\n");
+    for (int i = 0; i < 256; i++) {
+        if ((i % 16) == 0) fprintf(fp, "    ");
+        fprintf(fp, "%3u", cal->lut[i]);
+        if (i != 255) fprintf(fp, ", ");
+        if ((i % 16) == 15) fprintf(fp, "\n");
+    }
+    fprintf(fp, "};\n");
+
+    fclose(fp);
+    fprintf(stderr, "\nSaved %s\n", REPORT_FILE);
+    print_status(cal);
+    return 0;
+}
+
+static int pdm_on_level(int x, int y, int level, unsigned phase) {
+    int scaled = level * (PDM_PHASES * 64 + 1) / 256;
+    int bayer = bayer8x8[y & 7][x & 7];
+    unsigned rotate = (unsigned)((x * 3 + y * 5) % PDM_PHASES);
+    unsigned rank = temporal_order[(phase + rotate) % PDM_PHASES];
+    return scaled > (int)(rank * 64u) + bayer;
+}
+
+static void draw_blue_level_rect(int x0, int y0, int x1, int y1, int level, unsigned phase) {
+    if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
+    if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
+    for (int y = y0; y <= y1; y++) {
+        for (int x = x0; x <= x1; x++) {
+            if (pdm_on_level(x, y, level, phase)) bpx(x, y);
+        }
+    }
+}
+
+static void draw_calibration_view(const calibration_t *cal, unsigned phase, unsigned frame_counter) {
+    char line0[32];
+    char line1[32];
+    snprintf(line0, sizeof(line0), "G%.2f C%.2f B%+03d", cal->gamma, cal->gain, cal->bias);
+    snprintf(line1, sizeof(line1), "A%02d=%03u P%u", cal->selected + 1, cal->anchors[cal->selected], TARGET_FPS);
+    draw_str(0, 0, line0);
+    draw_str(0, 8, line1);
+
+    for (int y = 0; y < 12; y++) {
+        for (int x = 0; x < WIDTH; x++) {
+            int src = (x * 255) / (WIDTH - 1);
+            int level = cal->lut[src];
+            if (pdm_on_level(x, y, level, phase)) bpx(x, y);
+        }
+    }
+
+    for (int i = 0; i < CAL_ANCHORS; i++) {
+        int x0 = i * 8;
+        int x1 = x0 + 7;
+        draw_blue_level_rect(x0, 12, x1, 27, cal->anchors[i], phase);
+    }
+
+    if (((frame_counter / 8u) & 1u) == 0u) {
+        int x0 = cal->selected * 8;
+        int x1 = x0 + 7;
+        bline(x0, 11, x0, 28);
+        bline(x1, 11, x1, 28);
+        bline(x0, 11, x1, 11);
+        bline(x0, 28, x1, 28);
+    }
+
+    int prev = cal->anchors[cal->selected > 0 ? cal->selected - 1 : 0];
+    int curr = cal->anchors[cal->selected];
+    int next = cal->anchors[cal->selected < CAL_ANCHORS - 1 ? cal->selected + 1 : CAL_ANCHORS - 1];
+
+    draw_blue_level_rect(0, 28, 31, 47, prev, phase);
+    draw_blue_level_rect(32, 28, 63, 47, curr, phase);
+    draw_blue_level_rect(64, 28, 95, 47, next, phase);
+
+    for (int y = 28; y < 48; y++) {
+        for (int x = 96; x < 128; x++) {
+            int checker = (((x >> 2) ^ (y >> 2)) & 1) ? curr : next;
+            if (pdm_on_level(x, y, checker, phase)) bpx(x, y);
+        }
+    }
+
+    bline(31, 28, 31, 47);
+    bline(63, 28, 63, 47);
+    bline(95, 28, 95, 47);
+}
+
+static void handle_key(calibration_t *cal, int ch) {
+    switch (ch) {
+        case 'a':
+            cal->selected = clampi(cal->selected - 1, 0, CAL_ANCHORS - 1);
+            break;
+        case 'd':
+            cal->selected = clampi(cal->selected + 1, 0, CAL_ANCHORS - 1);
+            break;
+        case 'j':
+            adjust_anchor(cal, -1);
+            break;
+        case 'k':
+            adjust_anchor(cal, +1);
+            break;
+        case 'J':
+            adjust_anchor(cal, -4);
+            break;
+        case 'K':
+            adjust_anchor(cal, +4);
+            break;
+        case '[':
+            cal->gamma = clampf_local(cal->gamma - 0.05f, 0.40f, 3.00f);
+            rebuild_anchors_from_curve(cal);
+            break;
+        case ']':
+            cal->gamma = clampf_local(cal->gamma + 0.05f, 0.40f, 3.00f);
+            rebuild_anchors_from_curve(cal);
+            break;
+        case '-':
+            cal->gain = clampf_local(cal->gain - 0.05f, 0.20f, 2.50f);
+            rebuild_anchors_from_curve(cal);
+            break;
+        case '=':
+        case '+':
+            cal->gain = clampf_local(cal->gain + 0.05f, 0.20f, 2.50f);
+            rebuild_anchors_from_curve(cal);
+            break;
+        case ',':
+            cal->bias = clampi(cal->bias - 1, -64, 64);
+            rebuild_anchors_from_curve(cal);
+            break;
+        case '.':
+            cal->bias = clampi(cal->bias + 1, -64, 64);
+            rebuild_anchors_from_curve(cal);
+            break;
+        case 'r':
+        case 'R':
+            rebuild_anchors_from_curve(cal);
+            break;
+        case 'p':
+        case 'P':
+            save_report(cal);
+            break;
+        case '?':
+            print_controls();
+            break;
+        case 'q':
+        case 'Q':
+            running = 0;
+            break;
+        default:
+            break;
+    }
+}
+
+int main(int argc, char *argv[]) {
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "-?") == 0) {
+            usage(argv[0]);
+            return 0;
+        }
+        usage(argv[0]);
+        return 1;
+    }
+
+    calibration_t cal;
+    memset(&cal, 0, sizeof(cal));
+    cal.gamma = 1.60f;
+    cal.gain = 1.00f;
+    cal.bias = 0;
+    cal.selected = 8;
+    rebuild_anchors_from_curve(&cal);
+
+    signal(SIGINT, stop);
+    signal(SIGTERM, stop);
+
+    if (enter_raw_terminal() != 0) {
+        perror("raw terminal");
+        return 1;
+    }
+
+    print_controls();
+    print_status(&cal);
+
+    i2c_fd = open("/dev/i2c-1", O_RDWR);
+    if (i2c_fd < 0) {
+        perror("open i2c");
+        return 1;
+    }
+    if (ioctl(i2c_fd, I2C_SLAVE, ADDR) < 0) {
+        perror("ioctl");
+        close(i2c_fd);
+        return 1;
+    }
+
+    init_display();
+
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+    long frame_ns = 1000000000L / TARGET_FPS;
+    unsigned frame_counter = 0;
+
+    while (running) {
+        for (;;) {
+            unsigned char ch;
+            ssize_t n = read(STDIN_FILENO, &ch, 1);
+            if (n == 1) {
+                handle_key(&cal, ch);
+                print_status(&cal);
+                continue;
+            }
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+            if (n <= 0) break;
+        }
+
+        memset(fb, 0, sizeof(fb));
+        draw_calibration_view(&cal, frame_counter % PDM_PHASES, frame_counter);
+        flush();
+
+        frame_counter++;
+        next.tv_nsec += frame_ns;
+        if (next.tv_nsec >= 1000000000L) {
+            next.tv_nsec -= 1000000000L;
+            next.tv_sec += 1;
+        }
+        sleep_until(&next);
+    }
+
+    save_report(&cal);
+    memset(fb, 0, sizeof(fb));
+    flush();
+    uint8_t off[2] = {0x00, 0xAE};
+    ssize_t written = write(i2c_fd, off, 2);
+    (void)written;
+    close(i2c_fd);
+    fprintf(stderr, "\nExited. Report written to %s\n", REPORT_FILE);
+    return 0;
+}

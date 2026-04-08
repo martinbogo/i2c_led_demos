@@ -1,0 +1,24 @@
+# OLED Compiled Arm Binaries
+badapple
+bounce
+cube
+horizon
+mechasm
+smartwatch
+st_dashboard
+st_smartwatch
+sysmon
+water
+
+# Raw Video Conversions
+*.mp4
+*.mkv
+*.webm
+
+# Hardware 1-bit SSD1306 Matrices
+*.bin
+
+# C/Python Caches
+__pycache__/
+*.o
+.DS_Store
