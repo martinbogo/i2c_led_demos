@@ -1030,7 +1030,7 @@ static void draw_progress_bar(float scene_t) {
     static const float chapter_marks[] = { 0.18f, 0.39f, 0.58f, 0.77f, 0.91f };
     int x0 = 4;
     int y0 = 11;
-    int x1 = 100;
+    int x1 = WIDTH - 5;
     int y1 = 15;
     int inner_x0 = x0 + 1;
     int inner_x1 = x1 - 1;
@@ -1071,25 +1071,9 @@ static void draw_progress_bar(float scene_t) {
     px(playhead_x + 1, y1);
 }
 
-static void draw_season_meter(const ElevatedParams *p) {
-    int x0 = 107;
-    int x1 = 122;
-    int y0 = 11;
-    int y1 = 15;
-    int rail_y = (y0 + y1) / 2;
-    int marker_x = x0 + 1
-                 + (int)lroundf(clampf_local(p->season, 0.0f, 1.0f) * (float)(x1 - x0 - 2));
-
-    draw_hline(x0 + 1, x1 - 1, rail_y);
-    draw_vline(x0, rail_y - 1, rail_y + 1);
-    draw_vline(x1, rail_y - 1, rail_y + 1);
-    draw_vline(marker_x, y0, y1);
-}
-
-static void draw_header(float scene_t, const ElevatedParams *p) {
+static void draw_header(float scene_t) {
     draw_str(2, 2, "ELEVATED RGBA/TBC");
     draw_progress_bar(scene_t);
-    draw_season_meter(p);
 }
 
 static void prepare_frame_cache(float scene_t, ElevatedFrameCache *cache) {
@@ -1101,7 +1085,7 @@ static void prepare_frame_cache(float scene_t, ElevatedFrameCache *cache) {
 static void draw_cached_frame(const ElevatedFrameCache *cache, unsigned phase, int full_refresh) {
     if (full_refresh) {
         memset(fb, 0, sizeof(fb));
-        draw_header(cache->scene_t, &cache->params);
+        draw_header(cache->scene_t);
     } else {
         memset(fb + WIDTH * BLUE_START_PAGE, 0, BLUE_PLANE_BYTES);
     }
