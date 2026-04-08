@@ -802,73 +802,77 @@ static void paper_plane_attitude(float scene_t, float *yaw, float *pitch, float 
 
 static void paper_plane_drone_camera(float scene_t, vec3_t plane,
                                                  vec3_t *cam_out, vec3_t *focus_out, float *scale_out) {
-     float side_w = window_local(scene_t, 4.5f, 10.5f, 1.6f);
-     float overtake_w = window_local(scene_t, 10.5f, 17.0f, 1.5f);
-     float loop_w = window_local(scene_t, 18.0f, 24.5f, 1.2f);
-     float skim_w = window_local(scene_t, 24.5f, 29.4f, 1.0f);
+    float side_w = window_local(scene_t, 4.0f, 10.8f, 1.6f);
+    float overtake_w = window_local(scene_t, 10.2f, 17.8f, 1.5f);
+    float loop_w = window_local(scene_t, 17.6f, 24.8f, 1.2f);
+    float skim_w = window_local(scene_t, 24.3f, 29.5f, 1.0f);
      float roll_dummy;
 
-     vec3_t lead = paper_plane_path(scene_t + 1.2f);
      vec3_t far_lead = paper_plane_path(scene_t + 2.0f);
 
-     vec3_t follow_anchor = paper_plane_path(scene_t - 0.90f);
+    vec3_t follow_anchor = paper_plane_path(scene_t - 2.20f);
      float follow_yaw, follow_pitch;
-     paper_plane_attitude(scene_t - 0.35f, &follow_yaw, &follow_pitch, &roll_dummy);
-     vec3_t follow_cam = ship_tf(v3(3.2f + 0.55f * sinf(scene_t * 0.55f),
-                                              1.9f + 0.25f * cosf(scene_t * 0.48f),
-                                              -10.8f),
+    paper_plane_attitude(scene_t - 1.35f, &follow_yaw, &follow_pitch, &roll_dummy);
+    vec3_t follow_cam = ship_tf(v3(11.8f + 1.1f * sinf(scene_t * 0.32f),
+                                   6.6f + 0.8f * cosf(scene_t * 0.27f),
+                                   -18.4f),
                                           follow_anchor, follow_yaw, follow_pitch * 0.25f, 0.0f, 1.0f);
-     vec3_t follow_focus = v3_add(v3_mix(plane, far_lead, 0.78f), v3(0.0f, -1.0f, 0.0f));
-     float follow_scale = 80.0f;
+    vec3_t follow_focus = v3_add(v3_mix(plane, far_lead, 0.28f), v3(0.0f, -0.6f, 0.0f));
+    float follow_scale = 79.0f;
 
-     vec3_t side_anchor = paper_plane_path(scene_t + 0.10f);
+    vec3_t side_anchor = paper_plane_path(scene_t - 1.10f);
      float side_yaw, side_pitch;
-     paper_plane_attitude(scene_t + 0.10f, &side_yaw, &side_pitch, &roll_dummy);
-     vec3_t side_cam = ship_tf(v3(8.5f,
-                                            1.2f + 0.20f * cosf(scene_t * 0.42f),
-                                            -1.3f + 0.70f * sinf(scene_t * 0.36f)),
+    paper_plane_attitude(scene_t - 0.35f, &side_yaw, &side_pitch, &roll_dummy);
+    vec3_t side_cam = ship_tf(v3(15.5f + 1.0f * sinf(scene_t * 0.23f),
+                                 -3.8f + 0.7f * cosf(scene_t * 0.38f),
+                                 -6.4f + 1.4f * sinf(scene_t * 0.29f)),
                                         side_anchor, side_yaw, side_pitch * 0.10f, 0.0f, 1.0f);
-     vec3_t side_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 1.7f), 0.82f),
-                                         v3(0.0f, -0.7f, 0.0f));
-     float side_scale = 83.0f;
+    {
+        float side_floor = terrain_height(side_cam.x, side_cam.z) + 1.2f;
+        if (side_cam.y < side_floor) side_cam.y = side_floor;
+    }
+    vec3_t side_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 1.6f), 0.18f),
+                               v3(0.0f, -0.8f, 0.0f));
+    float side_scale = 81.0f;
 
-     float overtake_u = smoothstep_local(clampf_local((scene_t - 10.5f) / 6.5f, 0.0f, 1.0f));
-     vec3_t overtake_anchor = paper_plane_path(scene_t + 0.30f);
+    float overtake_u = smoothstep_local(clampf_local((scene_t - 10.2f) / 7.6f, 0.0f, 1.0f));
+    vec3_t overtake_anchor = paper_plane_path(scene_t - 0.45f);
      float overtake_yaw, overtake_pitch;
-     paper_plane_attitude(scene_t + 0.30f, &overtake_yaw, &overtake_pitch, &roll_dummy);
-     float overtake_a = mixf_local(-0.72f * (float)M_PI, 0.18f * (float)M_PI, overtake_u);
-     float overtake_r = mixf_local(10.0f, 6.5f, overtake_u);
+    paper_plane_attitude(scene_t + 0.20f, &overtake_yaw, &overtake_pitch, &roll_dummy);
+    float overtake_a = mixf_local(-0.86f * (float)M_PI, 0.08f * (float)M_PI, overtake_u);
+    float overtake_r = mixf_local(18.5f, 13.0f, overtake_u);
      vec3_t overtake_cam = ship_tf(v3(sinf(overtake_a) * overtake_r,
-                                                 1.5f + 1.0f * sinf(overtake_u * (float)M_PI),
-                                                 -cosf(overtake_a) * overtake_r - 1.8f),
+                                     mixf_local(-2.8f, 5.4f, overtake_u)
+                                         + 0.6f * sinf(overtake_u * (float)M_PI),
+                                     -cosf(overtake_a) * overtake_r - 2.8f),
                                              overtake_anchor, overtake_yaw, overtake_pitch * 0.14f, 0.0f, 1.0f);
-     vec3_t overtake_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 0.80f), 0.48f),
-                                              v3(0.0f, -0.6f, 0.0f));
-     float overtake_scale = 84.0f;
+    vec3_t overtake_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 0.9f), 0.12f),
+                                   v3(0.0f, -0.5f, 0.0f));
+    float overtake_scale = 80.0f;
 
-     vec3_t loop_anchor = paper_plane_path(scene_t + 0.45f);
+    vec3_t loop_anchor = paper_plane_path(scene_t + 0.55f);
      float loop_yaw, loop_pitch;
      paper_plane_attitude(scene_t + 0.45f, &loop_yaw, &loop_pitch, &roll_dummy);
-     vec3_t loop_cam = ship_tf(v3(7.8f,
-                                            4.2f + 1.8f * sinf(paper_plane_loop_u(scene_t) * (float)M_PI),
-                                            -4.8f),
+    vec3_t loop_cam = ship_tf(v3(13.5f,
+                                 9.4f + 3.0f * sinf(paper_plane_loop_u(scene_t) * (float)M_PI),
+                                 -14.5f),
                                         loop_anchor, loop_yaw, loop_pitch * 0.08f, 0.0f, 1.0f);
-     vec3_t loop_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 1.0f), 0.35f),
-                                         v3(0.0f, -0.2f, 0.0f));
-     float loop_scale = 76.0f;
+    vec3_t loop_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 1.2f), 0.16f),
+                               v3(0.0f, -0.1f, 0.0f));
+    float loop_scale = 74.0f;
 
-     vec3_t skim_anchor = paper_plane_path(scene_t - 0.18f);
+    vec3_t skim_anchor = paper_plane_path(scene_t - 0.95f);
      float skim_yaw, skim_pitch;
-     paper_plane_attitude(scene_t + 0.10f, &skim_yaw, &skim_pitch, &roll_dummy);
-     vec3_t skim_cam = ship_tf(v3(-5.4f,
-                                            -0.45f + 0.15f * sinf(scene_t * 0.70f),
-                                            -7.8f),
+    paper_plane_attitude(scene_t + 0.10f, &skim_yaw, &skim_pitch, &roll_dummy);
+    vec3_t skim_cam = ship_tf(v3(-9.6f,
+                                 -5.2f + 0.5f * sinf(scene_t * 0.44f),
+                                 -14.0f),
                                         skim_anchor, skim_yaw, skim_pitch * 0.08f, 0.0f, 1.0f);
-     float skim_floor = terrain_height(skim_cam.x, skim_cam.z) + 0.80f;
+    float skim_floor = terrain_height(skim_cam.x, skim_cam.z) + 1.0f;
      if (skim_cam.y < skim_floor) skim_cam.y = skim_floor;
-     vec3_t skim_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 1.9f), 0.70f),
+    vec3_t skim_focus = v3_add(v3_mix(plane, paper_plane_path(scene_t + 1.9f), 0.24f),
                                          v3(0.0f, -2.0f, 0.0f));
-     float skim_scale = 86.0f;
+    float skim_scale = 82.0f;
 
      *cam_out = follow_cam;
      *focus_out = follow_focus;
@@ -889,9 +893,6 @@ static void paper_plane_drone_camera(float scene_t, vec3_t plane,
      *cam_out = v3_mix(*cam_out, skim_cam, skim_w);
      *focus_out = v3_mix(*focus_out, skim_focus, skim_w);
      *scale_out = mixf_local(*scale_out, skim_scale, skim_w);
-
-     (void)lead;
-     (void)roll_dummy;
 }
 
 static vec3_t tank_tf(vec3_t p, vec3_t pos, float yaw) {
