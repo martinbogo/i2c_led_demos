@@ -652,6 +652,62 @@ static void draw_3d_line(vec3_t a, vec3_t b, vec3_t cam, float yaw, float pitch,
     bline(x0, y0, x1, y1);
 }
 
+static int hill_surface_visible(int sx, int sy, const int *ybuf) {
+    if (sx < 0 || sx >= WIDTH || sy < 0 || sy >= BLUE_H) return 0;
+    return sy >= ybuf[sx] - 1;
+}
+
+static void draw_hill_tree(vec3_t base, float height, float lean,
+                           vec3_t cam, float yaw, float pitch, float scale,
+                           const int *ybuf) {
+    vec3_t top = v3(base.x + lean, base.y + height, base.z);
+    int bx, by, tx, ty;
+
+    if (!project_world(base, cam, yaw, pitch, scale, &bx, &by)) return;
+    if (!project_world(top, cam, yaw, pitch, scale, &tx, &ty)) return;
+    if (!hill_surface_visible(bx, by, ybuf)) return;
+
+    int crown = abs(by - ty) / 2 + 1;
+    if (crown < 1) crown = 1;
+    if (crown > 5) crown = 5;
+
+    int trunk_join_y = by - (by - ty) / 5;
+    int mid_y = ty + (by - ty) / 2;
+
+    bline(bx, by, tx, ty);
+    bline(tx, ty, tx - crown, mid_y);
+    bline(tx, ty, tx + crown, mid_y);
+    bline(tx - crown, mid_y, bx, trunk_join_y);
+    bline(tx + crown, mid_y, bx, trunk_join_y);
+
+    if (crown >= 3) {
+        int crown2 = crown - 1;
+        int upper_y = ty + (mid_y - ty) / 2;
+        bline(tx, upper_y, tx - crown2, upper_y + crown2);
+        bline(tx, upper_y, tx + crown2, upper_y + crown2);
+    }
+}
+
+static void draw_hill_rock(vec3_t base, float size, float skew,
+                           vec3_t cam, float yaw, float pitch, float scale,
+                           const int *ybuf) {
+    vec3_t left = v3(base.x - size * 0.70f, base.y + size * 0.10f, base.z);
+    vec3_t right = v3(base.x + size * 0.75f, base.y + size * 0.06f, base.z + skew * 0.20f);
+    vec3_t peak = v3(base.x + skew * 0.25f, base.y + size, base.z);
+    int bx, by, lx, ly, rx, ry, px, py;
+
+    if (!project_world(base, cam, yaw, pitch, scale, &bx, &by)) return;
+    if (!project_world(left, cam, yaw, pitch, scale, &lx, &ly)) return;
+    if (!project_world(right, cam, yaw, pitch, scale, &rx, &ry)) return;
+    if (!project_world(peak, cam, yaw, pitch, scale, &px, &py)) return;
+    if (!hill_surface_visible(bx, by, ybuf)) return;
+
+    bline(lx, ly, px, py);
+    bline(px, py, rx, ry);
+    bline(rx, ry, bx, by);
+    bline(bx, by, lx, ly);
+}
+
 static int doom_solid(int x, int y) {
     if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return 1;
     return doom_map[y][x] != '.';
@@ -1125,6 +1181,42 @@ static void draw_scene_voxel_plane(float scene_t, unsigned phase) {
     for (int x = 1; x < WIDTH; x++) {
         if (abs(ybuf[x] - ybuf[x - 1]) < 7)
             bline(x - 1, ybuf[x - 1], x, ybuf[x]);
+    }
+
+    {
+        int z_near = (int)floorf((cam.z + 6.0f) / 4.2f);
+        int z_far = (int)floorf((cam.z + 58.0f) / 4.2f);
+
+        for (int iz = z_far; iz >= z_near; iz--) {
+            for (int ix = -6; ix <= 6; ix++) {
+                int seed = ix * 92821 + iz * 68917;
+                float presence = hash01(seed + 5);
+                float kind = hash01(seed + 17);
+                float wz, wx, ground;
+                vec3_t base;
+
+                if (presence < 0.72f) continue;
+
+                wz = iz * 4.2f + (hash01(seed + 31) - 0.5f) * 1.5f;
+                wx = ix * 4.8f + (hash01(seed + 47) - 0.5f) * 2.6f
+                   + 1.0f * sinf((float)iz * 0.7f + (float)ix);
+
+                if (fabsf(wx - plane.x) < 3.0f && fabsf(wz - plane.z) < 7.0f) continue;
+
+                ground = terrain_height(wx, wz);
+                base = v3(wx, ground + 0.05f, wz);
+
+                if (kind > 0.58f && ground > -6.0f) {
+                    float height = 0.85f + 1.60f * hash01(seed + 59);
+                    float lean = (hash01(seed + 71) - 0.5f) * 0.35f;
+                    draw_hill_tree(base, height, lean, cam, yaw, pitch, scene_scale, ybuf);
+                } else {
+                    float size = 0.30f + 0.70f * hash01(seed + 83);
+                    float skew = hash01(seed + 97) - 0.5f;
+                    draw_hill_rock(base, size, skew, cam, yaw, pitch, scene_scale, ybuf);
+                }
+            }
+        }
     }
 
     for (int i = 0; i < 12; i++) {
