@@ -23,6 +23,13 @@
 #define ELEVATED_MUSIC_NOTE_FREQ_START 1.749869973e-4f
 #define ELEVATED_MUSIC_NOTE_FREQ_STEP_SQUARED (1.029302237f * 1.029302237f)
 
+/* Coarse post-mix settings derived from automated matching against elevated.wav. */
+#define ELEVATED_MUSIC_MASTERING_CUTOFF_HZ 700.0f
+#define ELEVATED_MUSIC_MASTERING_WIDTH 1.15f
+#define ELEVATED_MUSIC_MASTERING_LOW_GAIN 1.0f
+#define ELEVATED_MUSIC_MASTERING_HIGH_GAIN 1.4f
+#define ELEVATED_MUSIC_MASTERING_DRIVE 1.4f
+
 typedef enum {
     ELEVATED_MUSIC_RENDER_VARIANT_CURRENT = 0,
     ELEVATED_MUSIC_RENDER_VARIANT_HI_PRECISION,
@@ -397,6 +404,63 @@ static void elevated_music_compressor(ElevatedMusicContext *ctx, const uint8_t *
     }
 }
 
+static float elevated_music_clamp_unit(float sample) {
+    if (sample < -1.0f)
+        return -1.0f;
+    if (sample > 1.0f)
+        return 1.0f;
+    return sample;
+}
+
+static void elevated_music_apply_mastering(float *mix) {
+    const float alpha = expf(-2.0f * 3.14159265358979323846f
+                             * ELEVATED_MUSIC_MASTERING_CUTOFF_HZ
+                             / (float)ELEVATED_MUSIC_SAMPLE_RATE);
+    const float low_gain = ELEVATED_MUSIC_MASTERING_LOW_GAIN;
+    const float high_gain = ELEVATED_MUSIC_MASTERING_HIGH_GAIN;
+    const float width = ELEVATED_MUSIC_MASTERING_WIDTH;
+    const float drive = ELEVATED_MUSIC_MASTERING_DRIVE;
+    const float tanh_norm = tanhf(drive);
+    float low_l;
+    float low_r;
+
+    if (!mix)
+        return;
+
+    low_l = mix[0];
+    low_r = mix[1];
+    for (size_t frame = 0; frame < ELEVATED_MUSIC_TOTAL_SAMPLES; frame++) {
+        size_t index = frame * 2u;
+        float input_l = mix[index + 0u];
+        float input_r = mix[index + 1u];
+        float processed_l;
+        float processed_r;
+
+        if (frame != 0u) {
+            low_l = (1.0f - alpha) * input_l + alpha * low_l;
+            low_r = (1.0f - alpha) * input_r + alpha * low_r;
+        }
+
+        processed_l = low_l * low_gain + (input_l - low_l) * high_gain;
+        processed_r = low_r * low_gain + (input_r - low_r) * high_gain;
+
+        {
+            float mid = 0.5f * (processed_l + processed_r);
+            float side = 0.5f * (processed_l - processed_r) * width;
+            processed_l = mid + side;
+            processed_r = mid - side;
+        }
+
+        if (drive > 1.0f) {
+            processed_l = tanhf(processed_l * drive) / tanh_norm;
+            processed_r = tanhf(processed_r * drive) / tanh_norm;
+        }
+
+        mix[index + 0u] = elevated_music_clamp_unit(processed_l);
+        mix[index + 1u] = elevated_music_clamp_unit(processed_r);
+    }
+}
+
 static int elevated_music_generate_pcm16_current(int16_t **out_pcm, size_t *out_frames) {
     static const size_t synth_param_size = 72u;
     static const size_t machine_param_sizes[] = { 72u, 12u, 32u, 12u, 8u, 8u, 12u };
@@ -484,6 +548,8 @@ static int elevated_music_generate_pcm16_current(int16_t **out_pcm, size_t *out_
 
     {
         float *mix = elevated_music_current_buffer(&ctx);
+
+        elevated_music_apply_mastering(mix);
         for (size_t i = 0; i < ELEVATED_MUSIC_TOTAL_SAMPLES * 2u; i++) {
             long sample = lrintf(mix[i] * 32767.0f);
             if (sample < -32768L)
@@ -1010,6 +1076,8 @@ static int elevated_music_generate_pcm16_precision(const ElevatedMusicRenderConf
 
     {
         float *mix = elevated_music_current_buffer_precision(&ctx);
+
+        elevated_music_apply_mastering(mix);
         for (size_t i = 0; i < ELEVATED_MUSIC_TOTAL_SAMPLES * 2u; i++)
             pcm[i] = elevated_music_store_sample_precision((double)mix[i], config);
     }
