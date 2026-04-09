@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "elevated_music_data.h"
+#include "elevated_music_data_packed.h"
 
 #define ELEVATED_MUSIC_SAMPLE_RATE 44100u
 #define ELEVATED_MUSIC_NOTES_PER_ROW 16u
@@ -17,6 +17,9 @@
 #define ELEVATED_MUSIC_MAX_STACK_HEIGHT 4u
 #define ELEVATED_MUSIC_MAX_DELAY_SAMPLES 65536u
 #define ELEVATED_MUSIC_TOTAL_PARAM_WORDS 1114112u
+#define ELEVATED_MUSIC_DECODED_DATA_BYTES (ELEVATED_PATTERN_DATA_RAW_SIZE \
+                                         + ELEVATED_MACHINE_TREE_RAW_SIZE \
+                                         + ELEVATED_SEQUENCE_DATA_RAW_SIZE)
 
 /* Match the original synth_core.nh float literals exactly. */
 #define ELEVATED_MUSIC_FILTER_CUTOFF_SCALE 3.55243682861328125e-5f
@@ -71,6 +74,8 @@ typedef struct {
     int level;
     size_t note_offset;
     uint32_t random_seed;
+    const uint8_t *pattern_data;
+    const uint8_t *sequence_data;
 } ElevatedMusicContext;
 
 static int32_t elevated_music_read_i32(const uint8_t *ptr) {
@@ -91,6 +96,35 @@ static void elevated_music_write_i32(uint8_t *ptr, int32_t value) {
 
 static void elevated_music_write_f32(uint8_t *ptr, float value) {
     memcpy(ptr, &value, sizeof(value));
+}
+
+static int elevated_music_zero_rle_decode(uint8_t *dst,
+                                          size_t dst_size,
+                                          const uint8_t *src,
+                                          size_t src_size) {
+    size_t dst_pos = 0u;
+    size_t src_pos = 0u;
+
+    while (src_pos < src_size && dst_pos < dst_size) {
+        uint8_t control = src[src_pos++];
+        size_t count = (size_t)(control & 127u) + 1u;
+
+        if (dst_pos + count > dst_size)
+            return 0;
+
+        if (control & 128u) {
+            memset(dst + dst_pos, 0, count);
+        } else {
+            if (src_pos + count > src_size)
+                return 0;
+            memcpy(dst + dst_pos, src + src_pos, count);
+            src_pos += count;
+        }
+
+        dst_pos += count;
+    }
+
+    return src_pos == src_size && dst_pos == dst_size;
 }
 
 static float elevated_music_note_frequency(uint8_t note) {
@@ -190,8 +224,8 @@ static void elevated_music_synth(ElevatedMusicContext *ctx, const uint8_t *param
 
     for (size_t event = 0; event < (size_t)ELEVATED_MUSIC_NUM_ROWS * (size_t)ELEVATED_MUSIC_NOTES_PER_ROW; event++) {
         size_t event_index = note_base + event;
-        uint8_t pattern = elevated_sequence_data[event_index >> 4];
-        uint8_t note = elevated_pattern_data[(size_t)pattern * 16u + (event_index & 15u)];
+        uint8_t pattern = ctx->sequence_data[event_index >> 4];
+        uint8_t note = ctx->pattern_data[(size_t)pattern * 16u + (event_index & 15u)];
         float *note_dst = stream + event * (size_t)ELEVATED_MUSIC_MAX_NOTE_SAMPLES * 2u;
         float phase = 0.0f;
         float envelope = 0.0f;
@@ -629,7 +663,10 @@ static int elevated_music_generate_pcm16(int16_t **out_pcm, size_t *out_frames) 
     static const size_t machine_param_sizes[] = { 72u, 12u, 32u, 12u, 8u, 8u, 12u };
 
     ElevatedMusicContext ctx;
+    uint8_t *decoded_data;
+    uint8_t *pattern_data;
     uint8_t *machine_tree;
+    uint8_t *sequence_data;
     float *param_memory;
     int16_t *pcm;
     size_t param_cursor = 0u;
@@ -639,26 +676,42 @@ static int elevated_music_generate_pcm16(int16_t **out_pcm, size_t *out_frames) 
     *out_frames = 0u;
 
     ctx.stack = (float *)calloc(ELEVATED_MUSIC_MAX_STACK_HEIGHT * ELEVATED_MUSIC_TOTAL_SAMPLES * 2u, sizeof(float));
-    machine_tree = (uint8_t *)malloc(sizeof(elevated_machine_tree));
+    decoded_data = (uint8_t *)malloc(ELEVATED_MUSIC_DECODED_DATA_BYTES);
+    pattern_data = decoded_data;
+    machine_tree = decoded_data ? decoded_data + ELEVATED_PATTERN_DATA_RAW_SIZE : NULL;
+    sequence_data = machine_tree ? machine_tree + ELEVATED_MACHINE_TREE_RAW_SIZE : NULL;
     param_memory = (float *)calloc(ELEVATED_MUSIC_TOTAL_PARAM_WORDS, sizeof(float));
     pcm = (int16_t *)malloc(ELEVATED_MUSIC_TOTAL_SAMPLES * 2u * sizeof(int16_t));
-    if (!ctx.stack || !machine_tree || !param_memory || !pcm) {
+    if (!ctx.stack || !decoded_data || !param_memory || !pcm
+        || !elevated_music_zero_rle_decode(pattern_data,
+                                           ELEVATED_PATTERN_DATA_RAW_SIZE,
+                                           elevated_pattern_data_packed,
+                                           ELEVATED_PATTERN_DATA_PACKED_SIZE)
+        || !elevated_music_zero_rle_decode(machine_tree,
+                                           ELEVATED_MACHINE_TREE_RAW_SIZE,
+                                           elevated_machine_tree_packed,
+                                           ELEVATED_MACHINE_TREE_PACKED_SIZE)
+        || !elevated_music_zero_rle_decode(sequence_data,
+                                           ELEVATED_SEQUENCE_DATA_RAW_SIZE,
+                                           elevated_sequence_data_packed,
+                                           ELEVATED_SEQUENCE_DATA_PACKED_SIZE)) {
         free(ctx.stack);
-        free(machine_tree);
+        free(decoded_data);
         free(param_memory);
         free(pcm);
         return 0;
     }
 
-    memcpy(machine_tree, elevated_machine_tree, sizeof(elevated_machine_tree));
     ctx.level = -1;
     ctx.note_offset = 0u;
     ctx.random_seed = 0u;
+    ctx.pattern_data = pattern_data;
+    ctx.sequence_data = sequence_data;
 
     elevated_music_synth(&ctx, machine_tree + tree_cursor);
     tree_cursor += synth_param_size;
 
-    while (tree_cursor < sizeof(elevated_machine_tree)) {
+    while (tree_cursor < ELEVATED_MACHINE_TREE_RAW_SIZE) {
         uint8_t type = machine_tree[tree_cursor++];
         uint8_t *params = machine_tree + tree_cursor;
 
@@ -692,7 +745,7 @@ static int elevated_music_generate_pcm16(int16_t **out_pcm, size_t *out_frames) 
             break;
         default:
             free(ctx.stack);
-            free(machine_tree);
+            free(decoded_data);
             free(param_memory);
             free(pcm);
             return 0;
@@ -703,7 +756,7 @@ static int elevated_music_generate_pcm16(int16_t **out_pcm, size_t *out_frames) 
 
     if (ctx.level != 0) {
         free(ctx.stack);
-        free(machine_tree);
+        free(decoded_data);
         free(param_memory);
         free(pcm);
         return 0;
@@ -724,7 +777,7 @@ static int elevated_music_generate_pcm16(int16_t **out_pcm, size_t *out_frames) 
     }
 
     free(ctx.stack);
-    free(machine_tree);
+    free(decoded_data);
     free(param_memory);
 
     *out_pcm = pcm;
