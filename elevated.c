@@ -402,18 +402,11 @@ static int project_world(vec3_t p, vec3_t cam, float yaw, float pitch,
 
 static void usage(const char *argv0) {
     fprintf(stderr,
-            "usage: %s [-n] [-t seconds] [--audio-variant NAME] [--write-audio FILE] [-h|-?]\n"
+            "usage: %s [-n] [-t seconds] [-h|-?]\n"
             "  -n               disable sound output\n"
             "  -t seconds       start from a given timeline position\n"
-            "  --audio-variant  audio renderer: %s, %s,\n"
-            "                   %s, %s\n"
-            "  --write-audio    write soundtrack WAV and exit\n"
             "  -h, -?           show this help message\n",
-            argv0,
-            elevated_music_render_variant_name(ELEVATED_MUSIC_RENDER_VARIANT_CURRENT),
-            elevated_music_render_variant_name(ELEVATED_MUSIC_RENDER_VARIANT_HI_PRECISION),
-            elevated_music_render_variant_name(ELEVATED_MUSIC_RENDER_VARIANT_HI_PRECISION_DENORM),
-            elevated_music_render_variant_name(ELEVATED_MUSIC_RENDER_VARIANT_HI_PRECISION_DENORM_X87));
+            argv0);
 }
 
 static int parse_float_arg(const char *arg, float *out) {
@@ -486,8 +479,7 @@ static size_t demo_cycle_frames(void) {
 
 static int build_audio_segment(int16_t **segment_pcm,
                                size_t *segment_frames,
-                               float start_time,
-                               ElevatedMusicRenderVariant audio_variant) {
+                               float start_time) {
     int16_t *full_pcm = NULL;
     size_t full_frames = 0;
     size_t frames = demo_cycle_frames();
@@ -499,13 +491,8 @@ static int build_audio_segment(int16_t **segment_pcm,
     *segment_pcm = NULL;
     *segment_frames = 0;
 
-    if (audio_variant == ELEVATED_MUSIC_RENDER_VARIANT_CURRENT) {
-        if (!elevated_music_generate_pcm16(&full_pcm, &full_frames))
-            return 0;
-    } else {
-        if (!elevated_music_generate_pcm16_variant(audio_variant, &full_pcm, &full_frames))
-            return 0;
-    }
+    if (!elevated_music_generate_pcm16(&full_pcm, &full_frames))
+        return 0;
 
     if (full_frames < frames)
         frames = full_frames;
@@ -575,35 +562,6 @@ static int write_wav_file(int fd, const int16_t *pcm, size_t frames) {
 
     return write_full_fd(fd, header, sizeof(header))
         && write_full_fd(fd, pcm, data_bytes);
-}
-
-static int export_audio_wav(const char *path,
-                            float start_time,
-                            ElevatedMusicRenderVariant audio_variant) {
-    int16_t *segment_pcm = NULL;
-    size_t segment_frames = 0;
-    int fd;
-    int ok;
-
-    if (!build_audio_segment(&segment_pcm, &segment_frames, start_time, audio_variant)) {
-        fprintf(stderr, "warning: failed to generate Elevated soundtrack\n");
-        return 0;
-    }
-
-    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        perror(path);
-        free(segment_pcm);
-        return 0;
-    }
-
-    ok = write_wav_file(fd, segment_pcm, segment_frames);
-    if (!ok)
-        perror(path);
-
-    close(fd);
-    free(segment_pcm);
-    return ok;
 }
 
 static int create_audio_wav(AudioPlayback *audio, const int16_t *pcm, size_t frames) {
@@ -1141,8 +1099,6 @@ static void draw_cached_frame(const ElevatedFrameCache *cache, unsigned phase, i
 int main(int argc, char *argv[]) {
     int disable_audio = 0;
     float start_time = 0.0f;
-    const char *write_audio_path = NULL;
-    ElevatedMusicRenderVariant audio_variant = ELEVATED_MUSIC_RENDER_VARIANT_CURRENT;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-n") == 0) {
@@ -1152,17 +1108,6 @@ int main(int argc, char *argv[]) {
                 usage(argv[0]);
                 return 1;
             }
-        } else if (strcmp(argv[i], "--audio-variant") == 0) {
-            if (++i >= argc || !elevated_music_parse_render_variant(argv[i], &audio_variant)) {
-                usage(argv[0]);
-                return 1;
-            }
-        } else if (strcmp(argv[i], "--write-audio") == 0) {
-            if (++i >= argc) {
-                usage(argv[0]);
-                return 1;
-            }
-            write_audio_path = argv[i];
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "-?") == 0) {
             usage(argv[0]);
             return 0;
@@ -1175,9 +1120,6 @@ int main(int argc, char *argv[]) {
     if (start_time < 0.0f) start_time = 0.0f;
     start_time = fmodf(start_time, DEMO_SECONDS);
     if (start_time < 0.0f) start_time += DEMO_SECONDS;
-
-    if (write_audio_path)
-        return export_audio_wav(write_audio_path, start_time, audio_variant) ? 0 : 1;
 
     i2c_fd = open("/dev/i2c-1", O_RDWR);
     if (i2c_fd < 0) {
@@ -1206,7 +1148,7 @@ int main(int argc, char *argv[]) {
         audio_playback.launched_at.tv_nsec = 0;
 
         if (!audio_playback.disabled) {
-            if (build_audio_segment(&segment_pcm, &segment_frames, start_time, audio_variant)
+            if (build_audio_segment(&segment_pcm, &segment_frames, start_time)
                 && create_audio_wav(&audio_playback, segment_pcm, segment_frames)) {
                 if (!launch_audio_playback(&audio_playback)) {
                     audio_playback.disabled = 1;
