@@ -121,65 +121,65 @@ static const uint8_t temporal_order[PDM_PHASES] = { 0, 2, 1 };
 static const wizard_step_t wizard_steps[WIZARD_STEP_COUNT] = {
     {
         "OVERVIEW",
-        "Look for a smooth top gradient and a 16-anchor strip that never goes backward.",
-        "Do not chase perfection yet. Press c to fork the current curve, make one small change, then compare A on the left against B on the right.",
-        "Novices usually judge two nearby choices better than they judge a long chain of edits from memory.",
-        "Keep the side that looks smoother overall with 1 or 2, then move on to the next step with n.",
-        "Pattern: full ramp on top, local anchor neighborhood below.",
+        "Press c to copy the current result into the other slot. Press 1 or 2 to choose the slot you want to edit. Change only one control.",
+        "Compare A on the left against B on the right. Keep one side unchanged so the comparison stays clean.",
+        "Expect the top ramp to brighten smoothly from left to right. Expect the 16 anchor bars to rise and never step backward.",
+        "If the whole curve bends the wrong way, use [ ] for gamma, - = for gain, or , . for bias. If only one small region looks wrong, use a/d and j/k to trim one anchor.",
+        "Look at the full ramp on top and the 16 anchor bars below.",
         8,
     },
     {
         "BLACK FLOOR",
-        "Patch 0 should stay truly black, while the first few dark patches should be barely but clearly visible.",
-        "Start with bias or gain. Use gamma only if the entire dark end is too flat or too steep. Use anchor 2 only for a local fix.",
-        "Bias shifts the whole curve, gain stretches it, gamma bends it, and anchors fix a small local mistake without moving everything else.",
-        "Copy A to B, make one small change in B, and keep the side that reveals 1 through 4 better without making patch 0 glow.",
-        "Patches: 0 1 2 3 4 6 8 12",
+        "Press c to copy the current result into the other slot. In the new slot, change bias or gain by one small step.",
+        "Compare the two sides. Keep only the side that gives you a cleaner black floor.",
+        "Expect patch 0 to stay fully black. Expect patches 1 through 4 to become barely visible one after another, without a sudden jump.",
+        "If every dark patch is invisible, raise bias or gain slightly. If black starts to glow, lower bias or gain. If only the first few patches are wrong, select anchor 2 and trim it.",
+        "Look at patches 0 1 2 3 4 6 8 12. Start with patch 0, then watch the first few dark patches appear.",
         1,
     },
     {
         "SHADOWS",
-        "The dark patches should separate cleanly, but the ramp should still climb gently out of black.",
-        "Work on anchors 2 through 4 first. Touch gamma again only if the entire shadow region bends the wrong way.",
-        "This part decides whether dark scenes have detail or collapse into a murky block.",
-        "Keep the side where the dark boxes separate more evenly, not the side with the biggest single jump.",
-        "Patches: 0 4 8 12 16 24 32 40",
+        "Press c to copy the current result into the other slot. In the new slot, adjust anchors 2 through 4 one small step at a time.",
+        "Compare A and B after each small change. Keep the side that separates the dark boxes more evenly.",
+        "Expect each dark patch to separate from the next. Expect the ramp to climb gently out of black without one patch jumping far ahead.",
+        "If the whole shadow region is compressed, change gamma slightly. If only one part of the dark region is uneven, leave gamma alone and trim anchors 2 through 4 instead.",
+        "Look at patches 0 4 8 12 16 24 32 40.",
         2,
     },
     {
         "MIDTONES",
-        "The middle patches should brighten at a steady pace with no obvious plateaus or sudden jumps.",
-        "Use anchors 6 through 9 for local shaping. Change gamma only if the whole middle looks too dark or too bright.",
-        "Midtones dominate most real content, so getting them even usually makes the whole display feel more natural.",
-        "Pick the side whose middle boxes look most evenly spaced, even if the difference is subtle.",
-        "Patches: 48 64 80 96 112 128 144 160",
+        "Press c to copy the current result into the other slot. In the new slot, adjust anchors 6 through 9 or make one small gamma change.",
+        "Compare both sides and keep the one whose middle boxes look more evenly spaced.",
+        "Expect the middle boxes to brighten at a steady pace. Expect no flat section and no sudden jump.",
+        "If the whole middle looks too dim or too bright, change gamma slightly. If one local section looks wrong, leave gamma alone and trim anchors 6 through 9.",
+        "Look at patches 48 64 80 96 112 128 144 160.",
         6,
     },
     {
         "HIGHLIGHTS",
-        "Bright patches should stay distinct as long as possible before they merge into full white.",
-        "Use anchors 11 through 14 for local shape. Reduce gain if everything is crushed into the brightest few steps.",
-        "Highlight separation keeps bright UI elements and reflections from turning into one flat block.",
-        "Keep the side where the last few bright patches stay separable longer, as long as 255 still reaches full white.",
-        "Patches: 176 192 208 224 236 244 250 255",
+        "Press c to copy the current result into the other slot. In the new slot, adjust anchors 11 through 14 or lower gain slightly.",
+        "Compare both sides and keep the one that preserves more bright-step separation.",
+        "Expect the bright boxes to stay distinct almost all the way to white. Expect 255 to reach full white.",
+        "If several bright boxes merge too early, lower gain or spread anchors 11 through 14. If the whole top end looks too dim, raise gain slightly.",
+        "Look at patches 176 192 208 224 236 244 250 255.",
         12,
     },
     {
         "STABILITY",
-        "Look for sparkle, shimmer, or flicker in the checker blocks while the two compared levels alternate in space and time.",
-        "If a block looks noisy, smooth the nearby anchors instead of forcing the levels farther apart.",
-        "Temporal grayscale can look unstable when neighboring output codes land on awkward pulse patterns.",
-        "Keep the side that looks calmer and more solid, even if it gives up a tiny amount of contrast.",
-        "Checker tests: 4/8, 12/16, 224/232, 244/252",
+        "Press c to copy the current result into the other slot. In the new slot, smooth the nearby anchors by one small step.",
+        "Watch both sides for a few seconds. Keep the side that looks calmer and more solid.",
+        "Expect the checker blocks to look steady. A small loss of contrast is acceptable if the flicker becomes noticeably lower.",
+        "If one checker block sparkles, smooth the nearby anchors instead of pushing the levels farther apart.",
+        "Look at checker pairs 4/8, 12/16, 224/232, 244/252.",
         12,
     },
     {
         "REVIEW",
-        "Check the whole ramp one last time and make sure the 16 anchor bars still rise monotonically from left to right.",
-        "Stay with the better A or B result, then scan for any obvious step that still stands out too much.",
-        "A final whole-curve review catches edits that improved one region but hurt another.",
-        "Choose the side that looks best overall, not the side that wins only one tiny region.",
-        "Pattern: full ramp on top, local anchor neighborhood below.",
+        "Choose the better side with 1 or 2. Then scan the whole curve from black to white one last time.",
+        "If one area still looks wrong, go back with b or n and fix that step. Save with p when the full curve looks right.",
+        "Expect the full ramp to rise smoothly, the anchor bars to remain monotonic, and no single step to stand out as wrong.",
+        "If one small area still looks wrong, return to that step and adjust the matching anchors. If the whole curve feels off, make one small global change and compare again.",
+        "Look at the full ramp on top and the 16 anchor bars below.",
         8,
     },
 };
@@ -423,7 +423,7 @@ static void load_variant(calibration_t *cal, int variant) {
 
 static void print_variant_selection(const calibration_t *cal) {
     fprintf(stderr,
-            "Editing slot %c. Left preview is A, right preview is B.\n",
+            "Edit slot %c. Look at A on the left and B on the right.\n",
             variant_name(cal->active_variant));
 }
 
@@ -436,7 +436,7 @@ static void fork_to_other_variant(calibration_t *cal) {
     cal->active_variant = target;
     current_from_variant(cal, &cal->variants[target]);
     fprintf(stderr,
-            "Copied slot %c into slot %c and switched to %c. Make one small change, then compare left A against right B.\n",
+            "Copied slot %c into slot %c. Now edit slot %c. Make one small change, then compare A on the left against B on the right.\n",
             variant_name(source), variant_name(target), variant_name(target));
 }
 
@@ -445,20 +445,20 @@ static void print_wizard_step(const calibration_t *cal) {
 
     fprintf(stderr,
             "\nWizard step %d/%d: %s\n"
-            "  What to judge: %s\n"
-            "  Adjust first: %s\n"
-            "  Why: %s\n"
-            "  A/B test: %s\n"
-            "  %s\n"
+            "  Look at: %s\n"
+            "  Do this: %s\n"
+            "  Then do this: %s\n"
+            "  Expect this: %s\n"
+            "  Tune it this way: %s\n"
             "  Slot controls: 1 edit A, 2 edit B, c forks the current curve into the other slot.\n"
             "  Current slot: %c\n\n",
             cal->wizard_step + 1, WIZARD_STEP_COUNT,
             step->title,
+            step->pattern,
             step->what_to_look_for,
             step->adjust_first,
             step->why,
             step->ab_test,
-            step->pattern,
             variant_name(cal->active_variant));
 }
 
@@ -496,12 +496,13 @@ static void print_controls(void) {
             "  - / =    decrease / increase gain by 0.05 and rebuild\n"
             "  , / .    decrease / increase bias by 1 and rebuild\n"
             "  r        rebuild anchors from current gamma / gain / bias\n\n"
-            "Novice workflow:\n"
-            "  1. Pick a wizard step with n or b.\n"
-            "  2. Press c to clone the current result into the other slot.\n"
-            "  3. Make one small change in the new slot.\n"
-            "  4. Compare A on the left against B on the right.\n"
-            "  5. Keep editing the better side with 1 or 2.\n\n");
+            "Calibration workflow:\n"
+            "  1. Press n or b to choose a step.\n"
+            "  2. Press c to copy the current result into the other slot.\n"
+            "  3. Press 1 or 2 to choose which slot you want to edit.\n"
+            "  4. Change one control only.\n"
+            "  5. Look at A on the left and B on the right.\n"
+            "  6. Keep the side that looks better, then move to the next step.\n\n");
 }
 
 static void print_status(const calibration_t *cal) {
