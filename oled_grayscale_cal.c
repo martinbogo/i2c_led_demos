@@ -123,7 +123,7 @@ static const wizard_step_t wizard_steps[WIZARD_STEP_COUNT] = {
         "OVERVIEW",
         "Press c to copy the current result into the other slot. Press 1 or 2 to choose the slot you want to edit. Change only one control.",
         "Compare A on the left against B on the right. Keep one side unchanged so the comparison stays clean.",
-        "Expect the top ramp to brighten smoothly from left to right. Expect the 16 anchor bars to rise and never step backward.",
+        "The top ramp should get steadily brighter from left to right, with no dark dip and no sudden bright jump. Each of the 16 anchor bars should be the same brightness or brighter than the bar before it.",
         "If the whole curve bends the wrong way, use [ ] for gamma, - = for gain, or , . for bias. If only one small region looks wrong, use a/d and j/k to trim one anchor.",
         "Look at the full ramp on top and the 16 anchor bars below.",
         8,
@@ -132,7 +132,7 @@ static const wizard_step_t wizard_steps[WIZARD_STEP_COUNT] = {
         "BLACK FLOOR",
         "Press c to copy the current result into the other slot. In the new slot, change bias or gain by one small step.",
         "Compare the two sides. Keep only the side that gives you a cleaner black floor.",
-        "Expect patch 0 to stay fully black. Expect patches 1 through 4 to become barely visible one after another, without a sudden jump.",
+        "Patch 0 should stay fully black. Patches 1 through 4 should appear one at a time as faint, separate steps, without one patch suddenly becoming much brighter than the rest.",
         "If every dark patch is invisible, raise bias or gain slightly. If black starts to glow, lower bias or gain. If only the first few patches are wrong, select anchor 2 and trim it.",
         "Look at patches 0 1 2 3 4 6 8 12. Start with patch 0, then watch the first few dark patches appear.",
         1,
@@ -141,7 +141,7 @@ static const wizard_step_t wizard_steps[WIZARD_STEP_COUNT] = {
         "SHADOWS",
         "Press c to copy the current result into the other slot. In the new slot, adjust anchors 2 through 4 one small step at a time.",
         "Compare A and B after each small change. Keep the side that separates the dark boxes more evenly.",
-        "Expect each dark patch to separate from the next. Expect the ramp to climb gently out of black without one patch jumping far ahead.",
+        "Each dark patch should look distinct from the next. The shadow ramp should rise gently out of black, without one box jumping much brighter than its neighbors.",
         "If the whole shadow region is compressed, change gamma slightly. If only one part of the dark region is uneven, leave gamma alone and trim anchors 2 through 4 instead.",
         "Look at patches 0 4 8 12 16 24 32 40.",
         2,
@@ -150,7 +150,7 @@ static const wizard_step_t wizard_steps[WIZARD_STEP_COUNT] = {
         "MIDTONES",
         "Press c to copy the current result into the other slot. In the new slot, adjust anchors 6 through 9 or make one small gamma change.",
         "Compare both sides and keep the one whose middle boxes look more evenly spaced.",
-        "Expect the middle boxes to brighten at a steady pace. Expect no flat section and no sudden jump.",
+        "The middle boxes should brighten at a steady pace. There should be no flat section where several boxes look the same and no sudden jump where one box leaps ahead.",
         "If the whole middle looks too dim or too bright, change gamma slightly. If one local section looks wrong, leave gamma alone and trim anchors 6 through 9.",
         "Look at patches 48 64 80 96 112 128 144 160.",
         6,
@@ -159,7 +159,7 @@ static const wizard_step_t wizard_steps[WIZARD_STEP_COUNT] = {
         "HIGHLIGHTS",
         "Press c to copy the current result into the other slot. In the new slot, adjust anchors 11 through 14 or lower gain slightly.",
         "Compare both sides and keep the one that preserves more bright-step separation.",
-        "Expect the bright boxes to stay distinct almost all the way to white. Expect 255 to reach full white.",
+        "The bright boxes should stay separate until very near white. The last box, 255, should still reach full white instead of stopping short.",
         "If several bright boxes merge too early, lower gain or spread anchors 11 through 14. If the whole top end looks too dim, raise gain slightly.",
         "Look at patches 176 192 208 224 236 244 250 255.",
         12,
@@ -168,7 +168,7 @@ static const wizard_step_t wizard_steps[WIZARD_STEP_COUNT] = {
         "STABILITY",
         "Press c to copy the current result into the other slot. In the new slot, smooth the nearby anchors by one small step.",
         "Watch both sides for a few seconds. Keep the side that looks calmer and more solid.",
-        "Expect the checker blocks to look steady. A small loss of contrast is acceptable if the flicker becomes noticeably lower.",
+        "The checker blocks should look steady instead of sparkling or shimmering. A small loss of contrast is acceptable if the flicker becomes noticeably lower.",
         "If one checker block sparkles, smooth the nearby anchors instead of pushing the levels farther apart.",
         "Look at checker pairs 4/8, 12/16, 224/232, 244/252.",
         12,
@@ -177,7 +177,7 @@ static const wizard_step_t wizard_steps[WIZARD_STEP_COUNT] = {
         "REVIEW",
         "Choose the better side with 1 or 2. Then scan the whole curve from black to white one last time.",
         "If one area still looks wrong, go back with b or n and fix that step. Save with p when the full curve looks right.",
-        "Expect the full ramp to rise smoothly, the anchor bars to remain monotonic, and no single step to stand out as wrong.",
+        "The full ramp should rise smoothly from black to white. The anchor bars should never get darker as they move to the right, and no one region should stand out as obviously wrong.",
         "If one small area still looks wrong, return to that step and adjust the matching anchors. If the whole curve feels off, make one small global change and compare again.",
         "Look at the full ramp on top and the 16 anchor bars below.",
         8,
@@ -448,7 +448,7 @@ static void print_wizard_step(const calibration_t *cal) {
             "  Look at: %s\n"
             "  Do this: %s\n"
             "  Then do this: %s\n"
-            "  Expect this: %s\n"
+            "  You should see: %s\n"
             "  Tune it this way: %s\n"
             "  Slot controls: 1 edit A, 2 edit B, c forks the current curve into the other slot.\n"
             "  Current slot: %c\n\n",
