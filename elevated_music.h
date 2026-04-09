@@ -33,15 +33,21 @@
 /* Intro wind sweetening to add filtered pink-noise motion instead of echo-like tails. */
 #define ELEVATED_MUSIC_WIND_INTRO_SECONDS 36.0f
 #define ELEVATED_MUSIC_WIND_INTRO_AIR_CUTOFF_HZ 1200.0f
-#define ELEVATED_MUSIC_WIND_INTRO_GAIN 1.36f
-#define ELEVATED_MUSIC_WIND_INTRO_WIDTH 1.10f
-#define ELEVATED_MUSIC_WIND_INTRO_DRIVE 1.95f
-#define ELEVATED_MUSIC_WIND_INTRO_NOISE_MIX 0.65f
-#define ELEVATED_MUSIC_WIND_INTRO_NOISE_DRIVE 2.8f
-#define ELEVATED_MUSIC_WIND_INTRO_NOISE_FLOOR 0.12f
-#define ELEVATED_MUSIC_WIND_INTRO_NOISE_RESPONSE 2.2f
-#define ELEVATED_MUSIC_WIND_INTRO_NOISE_LOWPASS_HZ 2100.0f
-#define ELEVATED_MUSIC_WIND_INTRO_NOISE_HIGHPASS_HZ 380.0f
+#define ELEVATED_MUSIC_WIND_INTRO_GAIN 1.06f
+#define ELEVATED_MUSIC_WIND_INTRO_WIDTH 1.05f
+#define ELEVATED_MUSIC_WIND_INTRO_DRIVE 1.30f
+#define ELEVATED_MUSIC_WIND_INTRO_NOISE_MIX 0.38f
+#define ELEVATED_MUSIC_WIND_INTRO_NOISE_DRIVE 2.10f
+#define ELEVATED_MUSIC_WIND_INTRO_NOISE_FLOOR 0.015f
+#define ELEVATED_MUSIC_WIND_INTRO_NOISE_RESPONSE 1.25f
+#define ELEVATED_MUSIC_WIND_INTRO_NOISE_LOWPASS_HZ 1850.0f
+#define ELEVATED_MUSIC_WIND_INTRO_NOISE_HIGHPASS_HZ 260.0f
+#define ELEVATED_MUSIC_WIND_INTRO_ATTACK_PORTION 0.24f
+#define ELEVATED_MUSIC_WIND_INTRO_RELEASE_START 0.70f
+#define ELEVATED_MUSIC_WIND_INTRO_INTENSITY_LFO1_HZ 0.082f
+#define ELEVATED_MUSIC_WIND_INTRO_INTENSITY_LFO2_HZ 0.031f
+#define ELEVATED_MUSIC_WIND_INTRO_TONE_LFO1_HZ 0.057f
+#define ELEVATED_MUSIC_WIND_INTRO_TONE_LFO2_HZ 0.019f
 
 typedef enum {
     ELEVATED_MUSIC_RENDER_VARIANT_CURRENT = 0,
@@ -425,6 +431,24 @@ static float elevated_music_clamp_unit(float sample) {
     return sample;
 }
 
+static float elevated_music_clamp01(float value) {
+    if (value < 0.0f)
+        return 0.0f;
+    if (value > 1.0f)
+        return 1.0f;
+    return value;
+}
+
+static float elevated_music_smoothstep(float edge0, float edge1, float value) {
+    float t;
+
+    if (edge0 == edge1)
+        return value < edge0 ? 0.0f : 1.0f;
+
+    t = elevated_music_clamp01((value - edge0) / (edge1 - edge0));
+    return t * t * (3.0f - 2.0f * t);
+}
+
 static float elevated_music_soft_saturate(float sample, float drive) {
     if (drive <= 1.0f)
         return sample;
@@ -518,10 +542,31 @@ static void elevated_music_apply_mastering(float *mix) {
         processed_r = elevated_music_soft_saturate(processed_r, drive);
 
         if (frame < intro_frames) {
-            float fade = 1.0f - (float)frame / (float)intro_frames;
+            const float two_pi = 6.28318530717958647692f;
+            float progress = (float)frame / (float)intro_frames;
+            float intro_time = (float)frame / (float)ELEVATED_MUSIC_SAMPLE_RATE;
+            float attack = elevated_music_smoothstep(0.0f,
+                                                     ELEVATED_MUSIC_WIND_INTRO_ATTACK_PORTION,
+                                                     progress);
+            float release = 1.0f - elevated_music_smoothstep(ELEVATED_MUSIC_WIND_INTRO_RELEASE_START,
+                                                             1.0f,
+                                                             progress);
+            float intensity_lfo = 0.60f
+                                + 0.25f * sinf(two_pi * ELEVATED_MUSIC_WIND_INTRO_INTENSITY_LFO1_HZ * intro_time)
+                                + 0.15f * sinf(two_pi * ELEVATED_MUSIC_WIND_INTRO_INTENSITY_LFO2_HZ * intro_time
+                                               + 1.4f);
+            float tone_lfo = 0.50f
+                           + 0.30f * sinf(two_pi * ELEVATED_MUSIC_WIND_INTRO_TONE_LFO1_HZ * intro_time + 0.7f)
+                           + 0.20f * sinf(two_pi * ELEVATED_MUSIC_WIND_INTRO_TONE_LFO2_HZ * intro_time + 2.0f);
+            float wind_shape = attack * release * elevated_music_clamp01(intensity_lfo);
             float air_hp_l;
             float air_hp_r;
             float wind_target;
+            float wind_tone;
+            float wind_dark_l;
+            float wind_dark_r;
+            float wind_bright_l;
+            float wind_bright_r;
             float wind_l;
             float wind_r;
             float intro_gain;
@@ -539,13 +584,14 @@ static void elevated_music_apply_mastering(float *mix) {
             air_hp_l = processed_l - air_l;
             air_hp_r = processed_r - air_r;
             wind_target = ELEVATED_MUSIC_WIND_INTRO_NOISE_FLOOR
-                        + fminf(1.0f,
-                                (fabsf(air_hp_l) + fabsf(air_hp_r))
-                                * ELEVATED_MUSIC_WIND_INTRO_NOISE_RESPONSE);
+                        + wind_shape * (0.20f
+                                        + 0.80f * fminf(1.0f,
+                                                        (fabsf(air_hp_l) + fabsf(air_hp_r))
+                                                        * ELEVATED_MUSIC_WIND_INTRO_NOISE_RESPONSE));
             if (wind_target > wind_env)
-                wind_env += (wind_target - wind_env) * 0.008f;
+                wind_env += (wind_target - wind_env) * 0.0018f;
             else
-                wind_env += (wind_target - wind_env) * 0.0008f;
+                wind_env += (wind_target - wind_env) * 0.0006f;
 
             wind_l = elevated_music_pink_noise_step(&wind_rng_l, pink_l);
             wind_r = elevated_music_pink_noise_step(&wind_rng_r, pink_r);
@@ -553,22 +599,29 @@ static void elevated_music_apply_mastering(float *mix) {
             noise_lp_r = (1.0f - noise_lp_alpha) * wind_r + noise_lp_alpha * noise_lp_r;
             noise_hp_l = (1.0f - noise_hp_alpha) * noise_lp_l + noise_hp_alpha * noise_hp_l;
             noise_hp_r = (1.0f - noise_hp_alpha) * noise_lp_r + noise_hp_alpha * noise_hp_r;
-            wind_l = elevated_music_soft_saturate(noise_lp_l - noise_hp_l,
+            wind_tone = elevated_music_clamp01(tone_lfo);
+            wind_dark_l = noise_lp_l * 0.55f;
+            wind_dark_r = noise_lp_r * 0.55f;
+            wind_bright_l = noise_lp_l - noise_hp_l;
+            wind_bright_r = noise_lp_r - noise_hp_r;
+            wind_l = wind_dark_l * (1.0f - wind_tone) + wind_bright_l * wind_tone;
+            wind_r = wind_dark_r * (1.0f - wind_tone) + wind_bright_r * wind_tone;
+            wind_l = elevated_music_soft_saturate(wind_l,
                                                   ELEVATED_MUSIC_WIND_INTRO_NOISE_DRIVE);
-            wind_r = elevated_music_soft_saturate(noise_lp_r - noise_hp_r,
+            wind_r = elevated_music_soft_saturate(wind_r,
                                                   ELEVATED_MUSIC_WIND_INTRO_NOISE_DRIVE);
             processed_l += wind_l
                        * ELEVATED_MUSIC_WIND_INTRO_NOISE_MIX
-                       * wind_env * fade;
+                       * wind_env;
             processed_r += wind_r
                        * ELEVATED_MUSIC_WIND_INTRO_NOISE_MIX
-                       * wind_env * fade;
+                       * wind_env;
 
-            intro_gain = 1.0f + (ELEVATED_MUSIC_WIND_INTRO_GAIN - 1.0f) * fade;
+            intro_gain = 1.0f + (ELEVATED_MUSIC_WIND_INTRO_GAIN - 1.0f) * wind_shape;
             processed_l *= intro_gain;
             processed_r *= intro_gain;
 
-            intro_width = 1.0f + (ELEVATED_MUSIC_WIND_INTRO_WIDTH - 1.0f) * fade;
+            intro_width = 1.0f + (ELEVATED_MUSIC_WIND_INTRO_WIDTH - 1.0f) * wind_shape;
             {
                 float mid = 0.5f * (processed_l + processed_r);
                 float side = 0.5f * (processed_l - processed_r) * intro_width;
@@ -576,7 +629,7 @@ static void elevated_music_apply_mastering(float *mix) {
                 processed_r = mid - side;
             }
 
-            intro_drive = 1.0f + (ELEVATED_MUSIC_WIND_INTRO_DRIVE - 1.0f) * fade;
+            intro_drive = 1.0f + (ELEVATED_MUSIC_WIND_INTRO_DRIVE - 1.0f) * wind_shape;
             processed_l = elevated_music_soft_saturate(processed_l, intro_drive);
             processed_r = elevated_music_soft_saturate(processed_r, intro_drive);
         }
