@@ -123,9 +123,9 @@ static const wizard_step_t wizard_steps[WIZARD_STEP_COUNT] = {
         "OVERVIEW",
         "Press c to copy the current result into the other slot. Press 1 or 2 to choose the slot you want to edit. Change only one control.",
         "Compare A on the left against B on the right. Keep one side unchanged so the comparison stays clean.",
-        "The top ramp should get steadily brighter from left to right, with no dark dip and no sudden bright jump. Each of the 16 anchor bars should be the same brightness or brighter than the bar before it.",
+        "The top ramp should get steadily brighter from left to right, with no dark dip and no sudden bright jump. In the row of 16 bars below it, each bar should look as bright as or brighter than the bar just before it. No bar should suddenly look darker than the bar to its left.",
         "If the whole curve bends the wrong way, use [ ] for gamma, - = for gain, or , . for bias. If only one small region looks wrong, use a/d and j/k to trim one anchor.",
-        "Look at the full ramp on top and the 16 anchor bars below.",
+        "Look at the full ramp on top and the row of 16 bars below it.",
         8,
     },
     {
@@ -177,9 +177,9 @@ static const wizard_step_t wizard_steps[WIZARD_STEP_COUNT] = {
         "REVIEW",
         "Choose the better side with 1 or 2. Then scan the whole curve from black to white one last time.",
         "If one area still looks wrong, go back with b or n and fix that step. Save with p when the full curve looks right.",
-        "The full ramp should rise smoothly from black to white. The anchor bars should never get darker as they move to the right, and no one region should stand out as obviously wrong.",
+        "The full ramp should rise smoothly from black to white. In the row of 16 bars below it, each bar should stay the same brightness or get brighter as you move to the right. No bar should suddenly look darker than the one before it, and no one region should stand out as obviously wrong.",
         "If one small area still looks wrong, return to that step and adjust the matching anchors. If the whole curve feels off, make one small global change and compare again.",
-        "Look at the full ramp on top and the 16 anchor bars below.",
+        "Look at the full ramp on top and the row of 16 bars below it.",
         8,
     },
 };
