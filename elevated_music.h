@@ -30,6 +30,17 @@
 #define ELEVATED_MUSIC_MASTERING_HIGH_GAIN 1.4f
 #define ELEVATED_MUSIC_MASTERING_DRIVE 1.4f
 
+/* Intro wind sweetening to reduce tonal echo and add more diffuse air movement. */
+#define ELEVATED_MUSIC_WIND_INTRO_SECONDS 36.0f
+#define ELEVATED_MUSIC_WIND_INTRO_AIR_CUTOFF_HZ 1200.0f
+#define ELEVATED_MUSIC_WIND_INTRO_GAIN 1.45f
+#define ELEVATED_MUSIC_WIND_INTRO_WIDTH 1.18f
+#define ELEVATED_MUSIC_WIND_INTRO_DRIVE 1.75f
+#define ELEVATED_MUSIC_WIND_INTRO_DIFFUSE_MIX 0.32f
+#define ELEVATED_MUSIC_WIND_INTRO_DIFFUSE_FEEDBACK 0.62f
+#define ELEVATED_MUSIC_WIND_INTRO_DELAY_L 431u
+#define ELEVATED_MUSIC_WIND_INTRO_DELAY_R 683u
+
 typedef enum {
     ELEVATED_MUSIC_RENDER_VARIANT_CURRENT = 0,
     ELEVATED_MUSIC_RENDER_VARIANT_HI_PRECISION,
@@ -412,6 +423,18 @@ static float elevated_music_clamp_unit(float sample) {
     return sample;
 }
 
+static float elevated_music_soft_saturate(float sample, float drive) {
+    if (drive <= 1.0f)
+        return sample;
+
+    {
+        float norm = tanhf(drive);
+        if (norm <= 0.0f)
+            return sample;
+        return tanhf(sample * drive) / norm;
+    }
+}
+
 static void elevated_music_apply_mastering(float *mix) {
     const float alpha = expf(-2.0f * 3.14159265358979323846f
                              * ELEVATED_MUSIC_MASTERING_CUTOFF_HZ
@@ -420,9 +443,19 @@ static void elevated_music_apply_mastering(float *mix) {
     const float high_gain = ELEVATED_MUSIC_MASTERING_HIGH_GAIN;
     const float width = ELEVATED_MUSIC_MASTERING_WIDTH;
     const float drive = ELEVATED_MUSIC_MASTERING_DRIVE;
-    const float tanh_norm = tanhf(drive);
+    const size_t intro_frames = (size_t)(ELEVATED_MUSIC_WIND_INTRO_SECONDS
+                                         * (float)ELEVATED_MUSIC_SAMPLE_RATE);
+    const float air_alpha = expf(-2.0f * 3.14159265358979323846f
+                                 * ELEVATED_MUSIC_WIND_INTRO_AIR_CUTOFF_HZ
+                                 / (float)ELEVATED_MUSIC_SAMPLE_RATE);
+    float diffuse_l[ELEVATED_MUSIC_WIND_INTRO_DELAY_L] = { 0.0f };
+    float diffuse_r[ELEVATED_MUSIC_WIND_INTRO_DELAY_R] = { 0.0f };
     float low_l;
     float low_r;
+    float air_l = 0.0f;
+    float air_r = 0.0f;
+    size_t diffuse_pos_l = 0u;
+    size_t diffuse_pos_r = 0u;
 
     if (!mix)
         return;
@@ -451,9 +484,62 @@ static void elevated_music_apply_mastering(float *mix) {
             processed_r = mid - side;
         }
 
-        if (drive > 1.0f) {
-            processed_l = tanhf(processed_l * drive) / tanh_norm;
-            processed_r = tanhf(processed_r * drive) / tanh_norm;
+        processed_l = elevated_music_soft_saturate(processed_l, drive);
+        processed_r = elevated_music_soft_saturate(processed_r, drive);
+
+        if (frame < intro_frames) {
+            float fade = 1.0f - (float)frame / (float)intro_frames;
+            float air_hp_l;
+            float air_hp_r;
+            float wet_l;
+            float wet_r;
+            float next_l;
+            float next_r;
+            float diffused_l;
+            float diffused_r;
+            float intro_gain;
+            float intro_width;
+            float intro_drive;
+
+            if (frame == 0u) {
+                air_l = processed_l;
+                air_r = processed_r;
+            } else {
+                air_l = (1.0f - air_alpha) * processed_l + air_alpha * air_l;
+                air_r = (1.0f - air_alpha) * processed_r + air_alpha * air_r;
+            }
+
+            air_hp_l = processed_l - air_l;
+            air_hp_r = processed_r - air_r;
+            wet_l = diffuse_l[diffuse_pos_l];
+            wet_r = diffuse_r[diffuse_pos_r];
+            next_l = air_hp_l + wet_r * ELEVATED_MUSIC_WIND_INTRO_DIFFUSE_FEEDBACK;
+            next_r = air_hp_r + wet_l * ELEVATED_MUSIC_WIND_INTRO_DIFFUSE_FEEDBACK;
+            diffuse_l[diffuse_pos_l] = next_l;
+            diffuse_r[diffuse_pos_r] = next_r;
+            diffuse_pos_l = (diffuse_pos_l + 1u) % ELEVATED_MUSIC_WIND_INTRO_DELAY_L;
+            diffuse_pos_r = (diffuse_pos_r + 1u) % ELEVATED_MUSIC_WIND_INTRO_DELAY_R;
+
+            diffused_l = wet_r - next_l * ELEVATED_MUSIC_WIND_INTRO_DIFFUSE_FEEDBACK;
+            diffused_r = wet_l - next_r * ELEVATED_MUSIC_WIND_INTRO_DIFFUSE_FEEDBACK;
+            processed_l += diffused_l * ELEVATED_MUSIC_WIND_INTRO_DIFFUSE_MIX * fade;
+            processed_r += diffused_r * ELEVATED_MUSIC_WIND_INTRO_DIFFUSE_MIX * fade;
+
+            intro_gain = 1.0f + (ELEVATED_MUSIC_WIND_INTRO_GAIN - 1.0f) * fade;
+            processed_l *= intro_gain;
+            processed_r *= intro_gain;
+
+            intro_width = 1.0f + (ELEVATED_MUSIC_WIND_INTRO_WIDTH - 1.0f) * fade;
+            {
+                float mid = 0.5f * (processed_l + processed_r);
+                float side = 0.5f * (processed_l - processed_r) * intro_width;
+                processed_l = mid + side;
+                processed_r = mid - side;
+            }
+
+            intro_drive = 1.0f + (ELEVATED_MUSIC_WIND_INTRO_DRIVE - 1.0f) * fade;
+            processed_l = elevated_music_soft_saturate(processed_l, intro_drive);
+            processed_r = elevated_music_soft_saturate(processed_r, intro_drive);
         }
 
         mix[index + 0u] = elevated_music_clamp_unit(processed_l);
