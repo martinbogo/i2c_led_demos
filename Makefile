@@ -20,15 +20,36 @@ SRCS = $(wildcard *.c)
 
 # Auto-generate matching target binaries
 BINS = $(SRCS:.c=)
+DEP_DIR = .deps
+
+ifeq ($(strip $(MAKECMDGOALS)),)
+DEP_TARGETS = $(BINS)
+else ifneq ($(filter clean,$(MAKECMDGOALS)),)
+DEP_TARGETS =
+else
+DEP_TARGETS = $(filter $(BINS),$(MAKECMDGOALS))
+endif
+
+DEPS = $(patsubst %,$(DEP_DIR)/%.d,$(DEP_TARGETS))
+
+.PHONY: all clean
 
 i2c_oled_demo: CFLAGS := $(SIZE_CFLAGS)
 i2c_oled_demo: LDFLAGS += $(SIZE_LDFLAGS)
 
 all: $(BINS)
 
+$(DEP_DIR):
+	mkdir -p $@
+
+$(DEP_DIR)/%.d: %.c | $(DEP_DIR)
+	@$(CC) $(CFLAGS) -MM -MP -MF $@ -MT $* $<
+
 # Rule to compile every individual .c file directly into its isolated binary payload
-%: %.c
+%: %.c $(DEP_DIR)/%.d
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
 clean:
-	rm -f $(BINS)
+	rm -rf $(BINS) $(DEP_DIR)
+
+-include $(DEPS)
