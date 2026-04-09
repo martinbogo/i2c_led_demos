@@ -34,6 +34,7 @@
 #include <unistd.h>
 
 #include "elevated_music.h"
+#include "elevated_sync_data.h"
 
 #define WIDTH             128
 #define HEIGHT            64
@@ -60,14 +61,6 @@
 typedef struct {
     float x, y, z;
 } vec3_t;
-
-typedef struct {
-    uint16_t row;
-    uint8_t value;
-    uint8_t interpolation;
-} TrackData;
-
-_Static_assert(sizeof(TrackData) == 4, "TrackData must stay compact");
 
 typedef struct {
     float time;
@@ -130,116 +123,35 @@ static const uint8_t temporal_order[PDM_PHASES] = { 0, 2, 1 };
  * Calibrated transfer curve from oled_gamma_calibration.txt, used by the
  * scene-10 PDM video pipeline via convert_pdm_48.py.
  */
-static const uint8_t oled_gray_lut[256] = {
-      0,   1,   1,   2,   2,   3,   4,   4,   5,   5,   6,   6,   7,   8,   8,   9,
-      9,  10,  11,  11,  12,  13,  13,  14,  15,  15,  16,  16,  17,  18,  18,  19,
-     20,  20,  21,  22,  22,  23,  24,  24,  25,  26,  26,  27,  27,  28,  29,  29,
-     30,  31,  31,  32,  33,  33,  34,  35,  36,  36,  37,  38,  38,  39,  40,  40,
-     41,  42,  43,  43,  44,  45,  45,  46,  47,  48,  48,  49,  50,  50,  51,  52,
-     52,  53,  54,  55,  55,  56,  57,  58,  58,  59,  60,  61,  61,  62,  63,  64,
-     64,  65,  66,  67,  67,  68,  69,  70,  71,  71,  72,  73,  74,  74,  75,  76,
-     77,  77,  78,  79,  80,  80,  81,  82,  83,  84,  84,  85,  86,  87,  87,  88,
-     89,  90,  90,  91,  92,  93,  93,  94,  95,  96,  97,  97,  98,  99, 100, 100,
-    101, 102, 103, 103, 104, 105, 106, 106, 107, 108, 109, 110, 110, 111, 112, 113,
-    114, 115, 115, 116, 117, 118, 119, 120, 120, 121, 122, 123, 124, 124, 125, 126,
-    127, 128, 129, 129, 130, 131, 132, 133, 134, 134, 135, 136, 137, 138, 138, 139,
-    140, 141, 142, 143, 143, 144, 145, 146, 147, 148, 148, 149, 150, 151, 152, 152,
-    153, 154, 155, 156, 157, 157, 158, 159, 160, 161, 162, 162, 163, 164, 165, 166,
-    167, 168, 168, 169, 170, 171, 172, 173, 174, 175, 175, 176, 177, 178, 179, 183,
-    188, 192, 197, 201, 206, 210, 215, 219, 224, 228, 233, 237, 242, 246, 251, 255
+static uint8_t oled_gray_lut[256];
+
+static const uint8_t oled_gray_lut_packed[] = {
+    0x01, 0x01, 0x11, 0x10, 0x10, 0x10, 0x01, 0x01, 0x11, 0x10, 0x01, 0x11, 0x10, 0x10, 0x01, 0x11,
+    0x10, 0x01, 0x11, 0x10, 0x01, 0x01, 0x11, 0x10, 0x01, 0x11, 0x10, 0x11, 0x10, 0x01, 0x11, 0x10,
+    0x11, 0x10, 0x01, 0x11, 0x01, 0x11, 0x10, 0x01, 0x11, 0x01, 0x11, 0x01, 0x11, 0x01, 0x11, 0x01,
+    0x11, 0x01, 0x11, 0x11, 0x10, 0x11, 0x10, 0x11, 0x10, 0x11, 0x10, 0x11, 0x01, 0x11, 0x01, 0x11,
+    0x01, 0x11, 0x01, 0x11, 0x11, 0x10, 0x11, 0x10, 0x11, 0x10, 0x11, 0x10, 0x11, 0x01, 0x11, 0x11,
+    0x01, 0x11, 0x11, 0x01, 0x11, 0x11, 0x10, 0x11, 0x11, 0x10, 0x11, 0x11, 0x10, 0x11, 0x01, 0x11,
+    0x11, 0x01, 0x11, 0x11, 0x01, 0x11, 0x11, 0x10, 0x11, 0x11, 0x10, 0x11, 0x11, 0x10, 0x11, 0x11,
+    0x01, 0x11, 0x11, 0x11, 0x01, 0x11, 0x11, 0x54, 0x54, 0x54, 0x54, 0x54, 0x54, 0x54, 0x54, 0x04
 };
 
-#define TRACK_END {512, 0, 0}
+static void init_oled_gray_lut(void) {
+    uint8_t value = 0;
 
-static const TrackData camSeedX[] = {
-    { 0, 98.0f, 0}, { 16, 5.0f, 0}, { 32, 17.0f, 0}, { 44, 113.0f, 0},
-    { 56, 108.0f, 0}, { 62, 18.0f, 0}, { 72, 9.0f, 0}, { 80, 105.0f, 0},
-    { 88, 6.0f, 0}, { 92, 101.0f, 0}, { 104, 186.0f, 0}, { 120, 12.0f, 0},
-    { 140, 81.0f, 0}, { 150, 98.0f, 0}, { 168, 153.0f, 0}, { 196, 114.0f, 0},
-    { 212, 48.0f, 0}, { 228, 83.0f, 0}, { 260, 11.0f, 0}, { 268, 8.0f, 0},
-    { 276, 22.0f, 0}, { 292, 11.0f, 0}, { 308, 3.0f, 0}, { 328, 9.0f, 0},
-    { 344, 50.0f, 0}, { 360, 1.0f, 0}, { 392, 125.0f, 0}, TRACK_END
-};
+    oled_gray_lut[0] = 0;
+    for (size_t i = 0; i < sizeof(oled_gray_lut_packed); i++) {
+        size_t dst = i * 2u + 1u;
+        uint8_t packed = oled_gray_lut_packed[i];
 
-static const TrackData camSeedY[] = {
-    { 0, 0.0f, 0}, { 150, 1.0f, 0}, { 308, 0.0f, 0}, { 344, 1.0f, 0},
-    { 360, 0.0f, 0}, TRACK_END
-};
-
-static const TrackData camSpeed[] = {
-    { 0, 1.0f, 0}, { 92, 5.0f, 0}, { 104, 4.0f, 0}, { 140, 24.0f, 0},
-    { 150, 58.0f, 0}, { 168, 87.0f, 0}, { 196, 255.0f, 0}, { 228, 188.0f, 0},
-    { 260, 255.0f, 0}, { 292, 16.0f, 0}, { 308, 64.0f, 0}, { 328, 179.0f, 0},
-    { 360, 226.0f, 0}, { 392, 30.0f, 0}, TRACK_END
-};
-
-static const TrackData camFov[] = {
-    { 0, 53.0f, 0}, { 16, 160.0f, 0}, { 26, 8.0f, 0}, { 62, 4.0f, 0},
-    { 75, 2.0f, 0}, { 80, 20.0f, 0}, { 83, 12.0f, 0}, { 88, 8.0f, 0},
-    { 92, 60.0f, 0}, { 120, 24.0f, 0}, { 140, 18.0f, 0}, { 150, 28.0f, 0},
-    { 168, 48.0f, 0}, { 196, 160.0f, 0}, { 212, 120.0f, 0}, { 228, 64.0f, 0},
-    { 260, 128.0f, 0}, { 292, 53.0f, 0}, { 328, 120.0f, 0}, TRACK_END
-};
-
-static const TrackData camPosY[] = {
-    { 0, 4.0f, 0}, { 16, 128.0f, 0}, { 26, 9.0f, 0}, { 32, 4.0f, 0},
-    { 44, 5.0f, 0}, { 72, 14.0f, 0}, { 88, 32.0f, 0}, { 92, 8.0f, 0},
-    { 140, 80.0f, 0}, { 150, 140.0f, 0}, { 168, 16.0f, 0}, { 196, 8.0f, 0},
-    { 268, 4.0f, 0}, { 276, 16.0f, 0}, { 300, 48.0f, 0}, { 308, 190.0f, 0},
-    { 328, 14.0f, 0}, { 344, 20.0f, 0}, { 360, 14.0f, 0}, TRACK_END
-};
-
-static const TrackData camTarY[] = {
-    { 0, 32.0f, 0}, { 16, 255.0f, 0}, { 26, 128.0f, 0}, { 72, 127.0f, 0},
-    { 88, 128.0f, 0}, { 140, 106.0f, 0}, { 150, 108.0f, 0}, { 168, 115.0f, 0},
-    { 196, 128.0f, 0}, { 268, 200.0f, 0}, { 276, 128.0f, 0}, { 300, 111.0f, 0},
-    { 308, 80.0f, 0}, { 344, 100.0f, 0}, { 360, 120.0f, 0}, TRACK_END
-};
-
-static const TrackData sun_angle[] = {
-    { 0, 64.0f, 0}, { 26, 90.0f, 0}, { 32, 32.0f, 0}, { 62, 56.0f, 0},
-    { 72, 160.0f, 0}, { 80, 64.0f, 0}, { 88, 160.0f, 0}, { 92, 180.0f, 0},
-    { 104, 140.0f, 0}, { 120, 165.0f, 0}, { 140, 110.0f, 0}, { 150, 80.0f, 0},
-    { 168, 105.0f, 0}, { 196, 50.0f, 0}, { 228, 10.0f, 0}, { 260, 150.0f, 0},
-    { 276, 85.0f, 0}, { 292, 64.0f, 0}, { 308, 170.0f, 0}, { 328, 100.0f, 0},
-    { 344, 170.0f, 0}, { 360, 0.0f, 0}, { 392, 35.0f, 0}, TRACK_END
-};
-
-static const TrackData terWaterLevel[] = {
-    { 0, 154.0f, 0}, { 26, 200.0f, 0}, { 32, 0.0f, 0}, { 72, 170.0f, 0},
-    { 92, 0.0f, 0}, { 168, 120.0f, 0}, { 196, 160.0f, 0}, { 212, 40.0f, 0},
-    { 308, 180.0f, 0}, { 344, 0.0f, 0}, { 360, 193.0f, 0}, { 392, 170.0f, 0},
-    TRACK_END
-};
-
-static const TrackData terSeason[] = {
-    { 0, 0.0f, 0}, { 292, 0.0f, 1}, { 300, 64.0f, 1}, { 308, 128.0f, 1},
-    { 322, 255.0f, 0}, { 392, 255.0f, 1}, { 424, 0.0f, 0}, TRACK_END
-};
-
-static const TrackData imgBrightness[] = {
-    { 0, 0.0f, 1}, { 8, 128.0f, 0}, { 26, 110.0f, 0}, { 62, 32.0f, 0},
-    { 72, 90.0f, 0}, { 92, 110.0f, 0}, { 120, 128.0f, 0}, { 140, 90.0f, 0},
-    { 160, 90.0f, 1}, { 167, 0.0f, 0}, { 168, 128.0f, 0}, { 196, 120.0f, 0},
-    { 228, 105.0f, 0}, { 250, 105.0f, 1}, { 251, 128.0f, 0}, { 260, 100.0f, 0},
-    { 308, 24.0f, 0}, { 328, 120.0f, 0}, { 360, 110.0f, 0}, { 392, 100.0f, 0},
-    { 424, 100.0f, 1}, { 448, 0.0f, 0}, TRACK_END
-};
-
-static const TrackData imgContrast[] = {
-    { 0, 150.0f, 0}, { 62, 250.0f, 0}, { 72, 180.0f, 0}, { 92, 0.0f, 1},
-    { 102, 160.0f, 0}, { 120, 128.0f, 0}, { 140, 190.0f, 0}, { 160, 190.0f, 1},
-    { 167, 130.0f, 0}, { 168, 160.0f, 0}, { 196, 140.0f, 0}, { 228, 180.0f, 0},
-    { 292, 0.0f, 1}, { 293, 190.0f, 0}, { 308, 255.0f, 0}, { 328, 150.0f, 0},
-    { 360, 170.0f, 0}, { 392, 180.0f, 0}, { 424, 180.0f, 1}, { 448, 128.0f, 0},
-    TRACK_END
-};
-
-static const TrackData terScale[] = {
-    { 0, 200.0f, 0}, { 26, 140.0f, 0}, { 32, 200.0f, 0}, { 120, 255.0f, 0},
-    { 260, 220.0f, 0}, { 292, 255.0f, 0}, { 328, 20.0f, 0}, { 360, 230.0f, 0},
-    TRACK_END
-};
+        value = (uint8_t)(value + (packed & 0x0Fu));
+        oled_gray_lut[dst] = value;
+        if (dst + 1u < sizeof(oled_gray_lut)) {
+            value = (uint8_t)(value + (packed >> 4));
+            oled_gray_lut[dst + 1u] = value;
+        }
+    }
+}
 
 static void stop(int sig) { (void)sig; running = 0; }
 
@@ -352,12 +264,7 @@ static int project_world(vec3_t p, vec3_t cam, float yaw, float pitch,
 }
 
 static void usage(const char *argv0) {
-    fprintf(stderr,
-            "usage: %s [-n] [-t seconds] [-h|-?]\n"
-            "  -n               disable sound output\n"
-            "  -t seconds       start from a given timeline position\n"
-            "  -h, -?           show this help message\n",
-            argv0);
+    fprintf(stderr, "usage: %s [-n] [-t seconds] [-h|-?]\n", argv0);
 }
 
 static int parse_float_arg(const char *arg, float *out) {
@@ -701,18 +608,38 @@ static void bfill_circle(int cx, int cy, int r) {
     fill_circle(cx, cy + BLUE_Y, r);
 }
 
-static float sample_track(const TrackData *track, float scene_t) {
+static float sample_track(uint8_t track_id, float scene_t) {
     float rowf = scene_t / TRACK_ROW_SECONDS;
-    int idx = 0;
+    size_t idx = elevated_sync_track_offsets[track_id];
+    size_t end = idx + elevated_sync_track_lengths[track_id] - 1u;
+    uint16_t point;
+    uint16_t next_point;
+    uint16_t row;
+    uint16_t next_row;
+    uint8_t value;
 
-    while (track[idx + 1].row < 512 && track[idx + 1].row <= (int)floorf(rowf)) idx++;
-    if (!track[idx].interpolation) return (float)track[idx].value;
-    if (track[idx + 1].row >= 512 || track[idx + 1].row <= track[idx].row) return (float)track[idx].value;
+    while (idx < end) {
+        next_point = elevated_sync_points[idx + 1u];
+        next_row = elevated_sync_rows[next_point & ELEVATED_SYNC_ROW_INDEX_MASK];
+        if ((float)next_row > rowf)
+            break;
+        idx++;
+    }
 
-    return mixf_local((float)track[idx].value,
-                      (float)track[idx + 1].value,
-                      clampf_local((rowf - (float)track[idx].row) /
-                                   (float)(track[idx + 1].row - track[idx].row),
+    point = elevated_sync_points[idx];
+    value = (uint8_t)((point >> ELEVATED_SYNC_VALUE_SHIFT) & ELEVATED_SYNC_VALUE_MASK);
+    if (!(point & ELEVATED_SYNC_INTERPOLATE_MASK) || idx >= end)
+        return (float)value;
+
+    row = elevated_sync_rows[point & ELEVATED_SYNC_ROW_INDEX_MASK];
+    next_point = elevated_sync_points[idx + 1u];
+    next_row = elevated_sync_rows[next_point & ELEVATED_SYNC_ROW_INDEX_MASK];
+    if (next_row <= row)
+        return (float)value;
+
+    return mixf_local((float)value,
+                      (float)((next_point >> ELEVATED_SYNC_VALUE_SHIFT) & ELEVATED_SYNC_VALUE_MASK),
+                      clampf_local((rowf - (float)row) / (float)(next_row - row),
                                    0.0f, 1.0f));
 }
 
@@ -723,18 +650,18 @@ static void sample_params(float scene_t, ElevatedParams *p) {
         clamped_t = nextafterf(DEMO_SECONDS, 0.0f);
 
     p->time = clamped_t;
-    p->cam_seed_x = sample_track(camSeedX, clamped_t) / 256.0f;
-    p->cam_seed_y = sample_track(camSeedY, clamped_t) / 256.0f;
-    p->cam_speed = sample_track(camSpeed, clamped_t) / 4096.0f;
-    p->cam_fov = sample_track(camFov, clamped_t) / 96.0f;
-    p->cam_pos_y = sample_track(camPosY, clamped_t) / 64.0f;
-    p->cam_tar_y = (sample_track(camTarY, clamped_t) - 128.0f) / 4.0f;
-    p->sun_angle = sample_track(sun_angle, clamped_t) / 32.0f;
-    p->water_level = (sample_track(terWaterLevel, clamped_t) - 192.0f) / 128.0f;
-    p->season = sample_track(terSeason, clamped_t) / 256.0f;
-    p->brightness = (sample_track(imgBrightness, clamped_t) - 128.0f) / 128.0f;
-    p->contrast = sample_track(imgContrast, clamped_t) / 128.0f;
-    p->terrain_scale = (sample_track(terScale, clamped_t) - 128.0f) / 128.0f;
+    p->cam_seed_x = sample_track(ELEVATED_TRACK_CAM_SEED_X, clamped_t) / 256.0f;
+    p->cam_seed_y = sample_track(ELEVATED_TRACK_CAM_SEED_Y, clamped_t) / 256.0f;
+    p->cam_speed = sample_track(ELEVATED_TRACK_CAM_SPEED, clamped_t) / 4096.0f;
+    p->cam_fov = sample_track(ELEVATED_TRACK_CAM_FOV, clamped_t) / 96.0f;
+    p->cam_pos_y = sample_track(ELEVATED_TRACK_CAM_POS_Y, clamped_t) / 64.0f;
+    p->cam_tar_y = (sample_track(ELEVATED_TRACK_CAM_TAR_Y, clamped_t) - 128.0f) / 4.0f;
+    p->sun_angle = sample_track(ELEVATED_TRACK_SUN_ANGLE, clamped_t) / 32.0f;
+    p->water_level = (sample_track(ELEVATED_TRACK_WATER_LEVEL, clamped_t) - 192.0f) / 128.0f;
+    p->season = sample_track(ELEVATED_TRACK_SEASON, clamped_t) / 256.0f;
+    p->brightness = (sample_track(ELEVATED_TRACK_BRIGHTNESS, clamped_t) - 128.0f) / 128.0f;
+    p->contrast = sample_track(ELEVATED_TRACK_CONTRAST, clamped_t) / 128.0f;
+    p->terrain_scale = (sample_track(ELEVATED_TRACK_TERRAIN_SCALE, clamped_t) - 128.0f) / 128.0f;
     p->snow = smoothstep_local((p->season - 0.33f) / 0.45f);
     p->sun_dir = v3_norm(v3(cosf(p->sun_angle), 0.32f + 0.06f * (1.0f - p->snow), sinf(p->sun_angle)));
 }
@@ -1050,6 +977,7 @@ int main(int argc, char *argv[]) {
     if (start_time < 0.0f) start_time = 0.0f;
     start_time = fmodf(start_time, DEMO_SECONDS);
     if (start_time < 0.0f) start_time += DEMO_SECONDS;
+    init_oled_gray_lut();
 
     i2c_fd = open("/dev/i2c-1", O_RDWR);
     if (i2c_fd < 0) {
@@ -1082,11 +1010,11 @@ int main(int argc, char *argv[]) {
                 && create_audio_wav(&audio_playback, segment_pcm, segment_frames)) {
                 if (!launch_audio_playback(&audio_playback)) {
                     audio_playback.disabled = 1;
-                    fprintf(stderr, "warning: audio playback unavailable: %s\n", strerror(errno));
+                    fprintf(stderr, "warning: no audio: %s\n", strerror(errno));
                 }
             } else {
                 audio_playback.disabled = 1;
-                fprintf(stderr, "warning: failed to generate Elevated soundtrack\n");
+                fprintf(stderr, "warning: soundtrack generation failed\n");
             }
         }
 
