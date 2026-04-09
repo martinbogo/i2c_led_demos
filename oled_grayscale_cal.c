@@ -308,19 +308,27 @@ static void init_display(void) {
     (void)written;
 }
 
-static void flush(void) {
-    uint8_t ac[] = {0x00, 0x21, 0, WIDTH - 1, 0x22, 0, PAGES - 1};
+static void flush_region(int start_page, int end_page) {
+    uint8_t ac[] = {0x00, 0x21, 0, WIDTH - 1, 0x22, (uint8_t)start_page, (uint8_t)end_page};
     ssize_t written = write(i2c_fd, ac, sizeof(ac));
     (void)written;
-    for (int i = 0; i < WIDTH * PAGES; i += I2C_CHUNK) {
+    for (int i = start_page * WIDTH; i < (end_page + 1) * WIDTH; i += I2C_CHUNK) {
         uint8_t buf[I2C_CHUNK + 1];
         buf[0] = 0x40;
-        int len = WIDTH * PAGES - i;
+        int len = (end_page + 1) * WIDTH - i;
         if (len > I2C_CHUNK) len = I2C_CHUNK;
         memcpy(buf + 1, fb + i, len);
         written = write(i2c_fd, buf, len + 1);
         (void)written;
     }
+}
+
+static void flush_full(void) {
+    flush_region(0, PAGES - 1);
+}
+
+static void flush_blue(void) {
+    flush_region(BLUE_START_PAGE, PAGES - 1);
 }
 
 static void sleep_until(const struct timespec *next) {
@@ -637,7 +645,7 @@ static void draw_source_patch_row(const calibration_variant_t *variant,
         draw_blue_level_rect(x0, y0, x1, y1, level, phase);
         if (i > 0)
             bline(x0, y0, x0, y1);
-        if (i == highlighted_patch && ((frame_counter / 8u) & 1u) == 0u)
+        if (i == highlighted_patch)
             draw_blue_rect_outline(x0, y0, x1, y1);
     }
 }
@@ -653,14 +661,13 @@ static void draw_source_checker_rect(const calibration_variant_t *variant,
                                      unsigned frame_counter) {
     int level_a = variant->lut[source_a];
     int level_b = variant->lut[source_b];
-    int checker_phase = (int)((frame_counter / 12u) & 1u);
 
     if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
     if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
 
     for (int y = y0; y <= y1; y++) {
         for (int x = x0; x <= x1; x++) {
-            int tile = (((x - x0) >> 2) ^ ((y - y0) >> 2) ^ checker_phase) & 1;
+            int tile = (((x - x0) >> 2) ^ ((y - y0) >> 2)) & 1;
             int level = tile ? level_a : level_b;
             if (pdm_on_level(x, y, level, phase)) bpx(x, y);
         }
@@ -748,12 +755,10 @@ static void draw_wizard_preview(const calibration_t *cal, unsigned phase, unsign
     draw_wizard_preview_half(&cal->variants[1], cal->selected, (wizard_step_id_t)cal->wizard_step,
                              64, 127, phase, frame_counter);
     bline(63, 28, 63, 47);
-    if (((frame_counter / 8u) & 1u) == 0u) {
-        if (cal->active_variant == 0)
-            draw_blue_rect_outline(0, 28, 63, 47);
-        else
-            draw_blue_rect_outline(64, 28, 127, 47);
-    }
+    if (cal->active_variant == 0)
+        draw_blue_rect_outline(0, 28, 63, 47);
+    else
+        draw_blue_rect_outline(64, 28, 127, 47);
 }
 
 static void draw_calibration_view(const calibration_t *cal, unsigned phase, unsigned frame_counter) {
@@ -782,14 +787,12 @@ static void draw_calibration_view(const calibration_t *cal, unsigned phase, unsi
         draw_blue_level_rect(x0, 12, x1, 27, cal->anchors[i], phase);
     }
 
-    if (((frame_counter / 8u) & 1u) == 0u) {
-        int x0 = cal->selected * 8;
-        int x1 = x0 + 7;
-        bline(x0, 11, x0, 28);
-        bline(x1, 11, x1, 28);
-        bline(x0, 11, x1, 11);
-        bline(x0, 28, x1, 28);
-    }
+    int x0 = cal->selected * 8;
+    int x1 = x0 + 7;
+    bline(x0, 11, x0, 28);
+    bline(x1, 11, x1, 28);
+    bline(x0, 11, x1, 11);
+    bline(x0, 28, x1, 28);
 
     draw_wizard_preview(cal, phase, frame_counter);
 }
@@ -934,6 +937,7 @@ int main(int argc, char *argv[]) {
     clock_gettime(CLOCK_MONOTONIC, &next);
     long frame_ns = 1000000000L / TARGET_FPS;
     unsigned frame_counter = 0;
+    int header_dirty = 1;
 
     while (running) {
         for (;;) {
@@ -941,6 +945,7 @@ int main(int argc, char *argv[]) {
             ssize_t n = read(STDIN_FILENO, &ch, 1);
             if (n == 1) {
                 handle_key(&cal, ch);
+                header_dirty = 1;
                 print_status(&cal);
                 continue;
             }
@@ -950,7 +955,12 @@ int main(int argc, char *argv[]) {
 
         memset(fb, 0, sizeof(fb));
         draw_calibration_view(&cal, frame_counter % PDM_PHASES, frame_counter);
-        flush();
+        if (header_dirty) {
+            flush_full();
+            header_dirty = 0;
+        } else {
+            flush_blue();
+        }
 
         frame_counter++;
         next.tv_nsec += frame_ns;
@@ -963,7 +973,7 @@ int main(int argc, char *argv[]) {
 
     save_report(&cal);
     memset(fb, 0, sizeof(fb));
-    flush();
+    flush_full();
     uint8_t off[2] = {0x00, 0xAE};
     ssize_t written = write(i2c_fd, off, 2);
     (void)written;
