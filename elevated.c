@@ -62,10 +62,12 @@ typedef struct {
 } vec3_t;
 
 typedef struct {
-    int row;
-    float value;
-    int interpolation;
+    uint16_t row;
+    uint8_t value;
+    uint8_t interpolation;
 } TrackData;
+
+_Static_assert(sizeof(TrackData) == 4, "TrackData must stay compact");
 
 typedef struct {
     float time;
@@ -147,7 +149,7 @@ static const uint8_t oled_gray_lut[256] = {
     188, 192, 197, 201, 206, 210, 215, 219, 224, 228, 233, 237, 242, 246, 251, 255
 };
 
-#define TRACK_END {512, 0.0f, 0}
+#define TRACK_END {512, 0, 0}
 
 static const TrackData camSeedX[] = {
     { 0, 98.0f, 0}, { 16, 5.0f, 0}, { 32, 17.0f, 0}, { 44, 113.0f, 0},
@@ -704,11 +706,11 @@ static float sample_track(const TrackData *track, float scene_t) {
     int idx = 0;
 
     while (track[idx + 1].row < 512 && track[idx + 1].row <= (int)floorf(rowf)) idx++;
-    if (!track[idx].interpolation) return track[idx].value;
-    if (track[idx + 1].row >= 512 || track[idx + 1].row <= track[idx].row) return track[idx].value;
+    if (!track[idx].interpolation) return (float)track[idx].value;
+    if (track[idx + 1].row >= 512 || track[idx + 1].row <= track[idx].row) return (float)track[idx].value;
 
-    return mixf_local(track[idx].value,
-                      track[idx + 1].value,
+    return mixf_local((float)track[idx].value,
+                      (float)track[idx + 1].value,
                       clampf_local((rowf - (float)track[idx].row) /
                                    (float)(track[idx + 1].row - track[idx].row),
                                    0.0f, 1.0f));

@@ -8,12 +8,14 @@ LDLIBS = -lm -lz
 SIZE_CFLAGS = -Os -DNDEBUG $(COMMON_WARNINGS) -ffunction-sections -fdata-sections -fomit-frame-pointer \
 	-fno-unwind-tables -fno-asynchronous-unwind-tables
 SIZE_EXTRA_CFLAGS = -flto -fno-stack-protector -fno-ident
+SIZE_ELF_EXTRA_LDFLAGS =
 
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
 SIZE_LDFLAGS = -Wl,-dead_strip -Wl,-x
 else
 SIZE_LDFLAGS = -Wl,--gc-sections -Wl,-s
+SIZE_ELF_EXTRA_LDFLAGS = -Wl,--build-id=none -Wl,-z,norelro
 endif
 
 SIZE_EXTRA_LDFLAGS = -flto
@@ -41,7 +43,7 @@ i2c_oled_demo: CFLAGS := $(SIZE_CFLAGS)
 i2c_oled_demo: LDFLAGS += $(SIZE_LDFLAGS)
 
 elevated: CFLAGS := $(SIZE_CFLAGS) $(SIZE_EXTRA_CFLAGS)
-elevated: LDFLAGS += $(SIZE_LDFLAGS) $(SIZE_EXTRA_LDFLAGS)
+elevated: LDFLAGS += $(SIZE_LDFLAGS) $(SIZE_EXTRA_LDFLAGS) $(SIZE_ELF_EXTRA_LDFLAGS)
 elevated: LDLIBS := -lm
 
 all: $(BINS)
