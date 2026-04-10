@@ -41,6 +41,7 @@ endif
 
 DEPS = $(patsubst %,$(DEP_DIR)/%.d,$(DEP_TARGETS))
 
+.DEFAULT_GOAL := all
 .PHONY: all clean FORCE
 
 i2c_oled_demo: CFLAGS := $(SIZE_CFLAGS)
