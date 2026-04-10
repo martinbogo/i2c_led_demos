@@ -759,9 +759,9 @@ static void build_camera(const ElevatedParams *p, vec3_t *cam, vec3_t *focus,
     vec3_t delta;
     float horiz;
 
-    *cam = v3(cam_x, ground + 2.8f + p->cam_pos_y * 1.35f, cam_z);
+    *cam = v3(cam_x, ground + 5.0f + p->cam_pos_y * 1.35f, cam_z);
     *focus = v3(ahead_x,
-                ahead_ground + 1.2f + p->cam_tar_y * 0.10f,
+                ahead_ground + 2.2f + p->cam_tar_y * 0.10f,
                 ahead_z);
 
     delta = v3_sub(*focus, *cam);
@@ -801,7 +801,7 @@ static void render_elevated_luma(ElevatedFrameCache *cache) {
     int sparkle_phase = (int)floorf(p->time * 14.0f);
 
     build_camera(p, &cam, &focus, &yaw, &pitch, &proj_scale);
-    horizon_y = 15.0f + pitch * 20.0f;
+    horizon_y = 22.0f + pitch * 20.0f;
     cache->horizon_y = horizon_y;
 
     if (project_world(v3_add(cam, v3_scale(p->sun_dir, 110.0f)), cam, yaw, pitch, proj_scale, &sun_x, &sun_y)) {
