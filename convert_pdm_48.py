@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from functools import lru_cache
+from pathlib import Path
 import random
 import re
 import struct
@@ -36,6 +37,7 @@ TEMPORAL_ORDERS = {
 }
 
 LUT_NAMES = ("lut256", "oled_gray_lut")
+DEFAULT_CALIBRATION_REPORT = Path(__file__).resolve().with_name("oled_gamma_calibration.txt")
 
 
 def toroidal_distance_sq(a, b, width: int, height: int, depth: int) -> float:
@@ -159,6 +161,14 @@ def load_calibration_lut(path: str) -> bytes:
     raise SystemExit(f"{path}: no supported LUT found; expected one of: {', '.join(LUT_NAMES)}")
 
 
+def resolve_calibration_report(path_arg: str | None) -> Path | None:
+    if path_arg:
+        return Path(path_arg)
+    if DEFAULT_CALIBRATION_REPORT.is_file():
+        return DEFAULT_CALIBRATION_REPORT
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Convert grayscale raw video into a hybrid spatiotemporal PDM OLED playback stream."
@@ -170,7 +180,13 @@ def main():
     parser.add_argument("--dither", choices=(DITHER_ORDERED, DITHER_BLUE_NOISE), default=DITHER_BLUE_NOISE,
                         help="thresholding mode for grayscale-to-PDM conversion")
     parser.add_argument("--encoding", choices=("raw", "phase-xor"), default="phase-xor")
-    parser.add_argument("--calibration", help="path to an OLED calibration report containing a 256-entry LUT")
+    parser.add_argument(
+        "--calibration",
+        help=(
+            "path to an OLED calibration report containing a 256-entry LUT; "
+            f"defaults to {DEFAULT_CALIBRATION_REPORT.name} when present"
+        ),
+    )
     args = parser.parse_args()
 
     if args.height % 8 != 0:
@@ -185,7 +201,8 @@ def main():
     out = sys.stdout.buffer
     frame_count = 0
     phase_payloads = [bytearray() for _ in range(args.phases)]
-    calibration_lut = load_calibration_lut(args.calibration) if args.calibration else None
+    calibration_report = resolve_calibration_report(args.calibration)
+    calibration_lut = load_calibration_lut(str(calibration_report)) if calibration_report else None
 
     while True:
         frame = read_exact(sys.stdin.buffer, frame_bytes)

@@ -22,3 +22,6 @@ water
 __pycache__/
 *.o
 .DS_Store
+
+# Generated calibration LUT file
+oled_build_lut.h

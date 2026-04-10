@@ -7,7 +7,7 @@
  * terrain flyover, water plane, seasonal changes, sun motion, and cinematic
  * camera language in a CPU renderer suitable for Raspberry Pi over I2C.
  *
- * Compile: gcc -O2 -o elevated elevated.c -lm
+ * Compile: make elevated
  * Run:     sudo ./elevated
  */
 
@@ -32,6 +32,17 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#if defined(__has_include)
+#if __has_include("oled_build_lut.h")
+#include "oled_build_lut.h"
+#define HAVE_OLED_BUILD_LUT 1
+#else
+#define HAVE_OLED_BUILD_LUT 0
+#endif
+#else
+#define HAVE_OLED_BUILD_LUT 0
+#endif
 
 #include "elevated_music.h"
 #include "elevated_sync_data.h"
@@ -120,11 +131,17 @@ static const uint8_t bayer8x8[8][8] = {
 static const uint8_t temporal_order[PDM_PHASES] = { 0, 2, 1 };
 
 /*
- * Calibrated transfer curve from oled_gamma_calibration.txt, used by the
- * scene-10 PDM video pipeline via convert_pdm_48.py.
+ * Transfer curve for the OLED PDM pipeline. Normal builds generate this from
+ * oled_gamma_calibration.txt; when that generated header is unavailable, fall
+ * back to the repository default packed LUT.
  */
 static uint8_t oled_gray_lut[256];
 
+#if !HAVE_OLED_BUILD_LUT
+#define OLED_GRAY_LUT_FROM_CALIBRATION 0
+#define OLED_GRAY_LUT_SOURCE_PATH "repository default"
+#define OLED_GRAY_LUT_SOURCE_SYMBOL "default packed LUT"
+#define OLED_GRAY_LUT_FIRST_VALUE 0
 static const uint8_t oled_gray_lut_packed[] = {
     0x01, 0x01, 0x11, 0x10, 0x10, 0x10, 0x01, 0x01, 0x11, 0x10, 0x01, 0x11, 0x10, 0x10, 0x01, 0x11,
     0x10, 0x01, 0x11, 0x10, 0x01, 0x01, 0x11, 0x10, 0x01, 0x11, 0x10, 0x11, 0x10, 0x01, 0x11, 0x10,
@@ -135,11 +152,12 @@ static const uint8_t oled_gray_lut_packed[] = {
     0x11, 0x01, 0x11, 0x11, 0x01, 0x11, 0x11, 0x10, 0x11, 0x11, 0x10, 0x11, 0x11, 0x10, 0x11, 0x11,
     0x01, 0x11, 0x11, 0x11, 0x01, 0x11, 0x11, 0x54, 0x54, 0x54, 0x54, 0x54, 0x54, 0x54, 0x54, 0x04
 };
+#endif
 
 static void init_oled_gray_lut(void) {
-    uint8_t value = 0;
+    uint8_t value = (uint8_t)OLED_GRAY_LUT_FIRST_VALUE;
 
-    oled_gray_lut[0] = 0;
+    oled_gray_lut[0] = value;
     for (size_t i = 0; i < sizeof(oled_gray_lut_packed); i++) {
         size_t dst = i * 2u + 1u;
         uint8_t packed = oled_gray_lut_packed[i];
