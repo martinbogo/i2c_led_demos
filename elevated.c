@@ -752,16 +752,16 @@ static void build_camera(const ElevatedParams *p, vec3_t *cam, vec3_t *focus,
     float cam_z = travel + 16.0f * sinf(wobble_t * 0.27f + seed_y * 1.3f)
                 + 7.0f * cosf(wobble_t * 0.69f + seed_x * 0.8f);
     float ground = elevated_terrain_height(cam_x, cam_z, p);
-    float look_dist = 11.0f + p->cam_fov * 4.5f;
+    float look_dist = 32.0f + p->cam_fov * 8.0f;
     float ahead_x = cam_x + 9.0f * sinf(wobble_t * 0.42f + seed_x * 1.5f);
     float ahead_z = cam_z + look_dist + 5.0f * cosf(wobble_t * 0.24f + seed_y * 1.8f);
     float ahead_ground = elevated_terrain_height(ahead_x, ahead_z, p);
     vec3_t delta;
     float horiz;
 
-    *cam = v3(cam_x, ground + 6.2f + p->cam_pos_y * 1.35f, cam_z);
+    *cam = v3(cam_x, ground + 2.8f + p->cam_pos_y * 1.35f, cam_z);
     *focus = v3(ahead_x,
-                ahead_ground + 2.6f + p->cam_tar_y * 0.10f,
+                ahead_ground + 1.2f + p->cam_tar_y * 0.10f,
                 ahead_z);
 
     delta = v3_sub(*focus, *cam);
