@@ -11,6 +11,7 @@ RUN dpkg --add-architecture arm64 && apt-get update && apt-get install -y \
     gcc-aarch64-linux-gnu \
     g++-aarch64-linux-gnu \
     libc6-dev-arm64-cross \
+    python3 \
     zlib1g-dev:arm64 \
     make \
  && rm -rf /var/lib/apt/lists/*
