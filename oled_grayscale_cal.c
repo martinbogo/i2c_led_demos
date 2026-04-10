@@ -38,6 +38,7 @@
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #define WIDTH             128
 #define HEIGHT            64
@@ -54,9 +55,11 @@
 #define AB_SLOT_COUNT     2
 #define WIZARD_STEP_COUNT 7
 #define RAMP_Y0           0
-#define RAMP_Y1           10
-#define PREVIEW_Y0        14
-#define PREVIEW_Y1        47
+#define RAMP_Y1           7
+#define PREVIEW_Y0        10
+#define PREVIEW_Y1        23
+#define IMAGE_Y0          24
+#define IMAGE_Y1          47
 #define REPORT_FILE       "oled_gamma_calibration.txt"
 
 #ifndef M_PI
@@ -218,6 +221,8 @@ static const uint8_t font5x7[][5] = {
 
 static int i2c_fd = -1;
 static uint8_t fb[WIDTH * PAGES];
+static uint8_t calibration_image[WIDTH * BLUE_H];
+static int calibration_image_loaded = 0;
 static volatile int running = 1;
 static struct termios saved_termios;
 static int termios_valid = 0;
@@ -242,6 +247,223 @@ static float clampf_local(float v, float lo, float hi) {
 static void stop(int sig) {
     (void)sig;
     running = 0;
+}
+
+static uint32_t read_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24)
+         | ((uint32_t)p[1] << 16)
+         | ((uint32_t)p[2] << 8)
+         | (uint32_t)p[3];
+}
+
+static int paeth_predictor(int a, int b, int c) {
+    int p = a + b - c;
+    int pa = abs(p - a);
+    int pb = abs(p - b);
+    int pc = abs(p - c);
+    if (pa <= pb && pa <= pc) return a;
+    if (pb <= pc) return b;
+    return c;
+}
+
+static int load_calibration_png(const char *path) {
+    enum { PNG_SIG_SIZE = 8 };
+    uint8_t *file_data = NULL;
+    uint8_t *idat_data = NULL;
+    uint8_t *inflated = NULL;
+    uint8_t *pixels = NULL;
+    size_t file_size = 0;
+    size_t idat_size = 0;
+    FILE *fp = fopen(path, "rb");
+    int width = 0, height = 0;
+    int bit_depth = 0, color_type = 0, interlace = 0;
+    int compression_method = -1, filter_method = -1;
+    int channels = 0;
+    int stride = 0;
+    int success = -1;
+
+    if (!fp)
+        return -1;
+
+    if (fseek(fp, 0, SEEK_END) != 0)
+        goto cleanup;
+    {
+        long end_pos = ftell(fp);
+        if (end_pos < 0)
+            goto cleanup;
+        file_size = (size_t)end_pos;
+    }
+    if (fseek(fp, 0, SEEK_SET) != 0)
+        goto cleanup;
+
+    file_data = (uint8_t *)malloc(file_size ? file_size : 1);
+    if (!file_data)
+        goto cleanup;
+    if (fread(file_data, 1, file_size, fp) != file_size)
+        goto cleanup;
+    fclose(fp);
+    fp = NULL;
+
+    if (file_size < PNG_SIG_SIZE || memcmp(file_data, "\x89PNG\r\n\x1a\n", PNG_SIG_SIZE) != 0)
+        goto cleanup;
+
+    for (size_t pos = PNG_SIG_SIZE; pos + 12 <= file_size; ) {
+        uint32_t chunk_len = read_be32(file_data + pos);
+        const uint8_t *chunk_type = file_data + pos + 4;
+        const uint8_t *chunk_data = file_data + pos + 8;
+        size_t next = pos + 12u + chunk_len;
+
+        if (next > file_size)
+            goto cleanup;
+
+        if (memcmp(chunk_type, "IHDR", 4) == 0) {
+            if (chunk_len < 13)
+                goto cleanup;
+            width = (int)read_be32(chunk_data + 0);
+            height = (int)read_be32(chunk_data + 4);
+            bit_depth = chunk_data[8];
+            color_type = chunk_data[9];
+            compression_method = chunk_data[10];
+            filter_method = chunk_data[11];
+            interlace = chunk_data[12];
+        } else if (memcmp(chunk_type, "IDAT", 4) == 0) {
+            if (idat_size > SIZE_MAX - chunk_len)
+                goto cleanup;
+            uint8_t *grown = (uint8_t *)realloc(idat_data, idat_size + chunk_len);
+            if (!grown)
+                goto cleanup;
+            idat_data = grown;
+            memcpy(idat_data + idat_size, chunk_data, chunk_len);
+            idat_size += chunk_len;
+        } else if (memcmp(chunk_type, "IEND", 4) == 0) {
+            break;
+        }
+
+        pos = next;
+    }
+
+    if (width != WIDTH || height != BLUE_H || bit_depth != 8 || compression_method != 0
+        || filter_method != 0 || interlace != 0 || idat_size == 0)
+        goto cleanup;
+
+    switch (color_type) {
+        case 0: channels = 1; break;
+        case 2: channels = 3; break;
+        case 4: channels = 2; break;
+        case 6: channels = 4; break;
+        default:
+            goto cleanup;
+    }
+
+    stride = width * channels;
+    inflated = (uint8_t *)malloc((size_t)height * (size_t)(stride + 1));
+    pixels = (uint8_t *)malloc((size_t)height * (size_t)stride);
+    if (!inflated || !pixels)
+        goto cleanup;
+
+    {
+        uLongf inflated_len = (uLongf)((size_t)height * (size_t)(stride + 1));
+        if (uncompress(inflated, &inflated_len, idat_data, (uLong)idat_size) != Z_OK)
+            goto cleanup;
+        if ((size_t)inflated_len != (size_t)height * (size_t)(stride + 1))
+            goto cleanup;
+    }
+
+    for (int y = 0; y < height; y++) {
+        const uint8_t *src = inflated + (size_t)y * (size_t)(stride + 1);
+        uint8_t *dst = pixels + (size_t)y * (size_t)stride;
+        uint8_t filter = src[0];
+        const uint8_t *prev = y == 0 ? NULL : pixels + (size_t)(y - 1) * (size_t)stride;
+
+        for (int x = 0; x < stride; x++) {
+            int raw = src[x + 1];
+            int left = x >= channels ? dst[x - channels] : 0;
+            int up = prev ? prev[x] : 0;
+            int up_left = (prev && x >= channels) ? prev[x - channels] : 0;
+            int value;
+
+            switch (filter) {
+                case 0: value = raw; break;
+                case 1: value = raw + left; break;
+                case 2: value = raw + up; break;
+                case 3: value = raw + ((left + up) >> 1); break;
+                case 4: value = raw + paeth_predictor(left, up, up_left); break;
+                default: goto cleanup;
+            }
+            dst[x] = (uint8_t)(value & 0xFF);
+        }
+    }
+
+    for (int y = 0; y < height; y++) {
+        const uint8_t *row = pixels + (size_t)y * (size_t)stride;
+        for (int x = 0; x < width; x++) {
+            const uint8_t *p = row + x * channels;
+            int gray;
+
+            switch (color_type) {
+                case 0:
+                    gray = p[0];
+                    break;
+                case 2:
+                    gray = (77 * p[0] + 150 * p[1] + 29 * p[2] + 128) >> 8;
+                    break;
+                case 4:
+                    gray = (p[0] * p[1] + 127) / 255;
+                    break;
+                case 6: {
+                    int lum = (77 * p[0] + 150 * p[1] + 29 * p[2] + 128) >> 8;
+                    gray = (lum * p[3] + 127) / 255;
+                    break;
+                }
+                default:
+                    gray = 0;
+                    break;
+            }
+
+            calibration_image[y * WIDTH + x] = (uint8_t)clampi(gray, 0, 255);
+        }
+    }
+
+    success = 0;
+
+cleanup:
+    if (fp) fclose(fp);
+    free(file_data);
+    free(idat_data);
+    free(inflated);
+    free(pixels);
+    return success;
+}
+
+static int try_load_calibration_png(const char *argv0) {
+    static const char image_name[] = "calibration.png";
+
+    if (load_calibration_png(image_name) == 0)
+        return 0;
+
+    if (argv0) {
+        const char *slash = strrchr(argv0, '/');
+        if (slash) {
+            size_t dir_len = (size_t)(slash - argv0 + 1);
+            size_t total = dir_len + sizeof(image_name);
+            char *path = (char *)malloc(total);
+
+            if (!path)
+                return -1;
+
+            memcpy(path, argv0, dir_len);
+            memcpy(path + dir_len, image_name, sizeof(image_name));
+
+            if (load_calibration_png(path) == 0) {
+                free(path);
+                return 0;
+            }
+
+            free(path);
+        }
+    }
+
+    return -1;
 }
 
 static void usage(const char *argv0) {
@@ -550,12 +772,16 @@ static void choose_candidate(calibration_t *cal, int choice) {
 
 static void print_wizard_step(const calibration_t *cal) {
     const wizard_step_t *step = &wizard_steps[cal->wizard_step];
+    const char *photo_hint = calibration_image_loaded
+        ? "  Also check the photo below. Pick the side where the face, jacket, and bright background look more natural, with detail in both the dark and bright parts.\n"
+        : "";
 
     fprintf(stderr,
             "\nStep %d/%d: %s\n"
             "  Look at %s\n"
             "  Press 1 if A is better. Press 2 if B is better.\n"
             "  Better means: %s\n"
+            "%s"
             "  After you choose, I will make the next comparison for you.\n"
             "  %s\n"
             "  Other keys: n next step, b previous step, p save, q quit, ? help.\n\n",
@@ -563,6 +789,7 @@ static void print_wizard_step(const calibration_t *cal) {
             step->title,
             step->look_at,
             step->better_means,
+            photo_hint,
             step->when_done);
 }
 
@@ -601,6 +828,13 @@ static void print_controls(void) {
             "  2. Press 1 if A is better. Press 2 if B is better.\n"
             "  3. I will make the next comparison for you.\n"
             "  4. Press n when the current step looks good enough.\n\n");
+
+    if (calibration_image_loaded) {
+        fprintf(stderr,
+                "Real-image check:\n"
+                "  The photo below the test pattern uses the same grayscale pipeline.\n"
+                "  Use it as the final check for faces, clothing, and background detail.\n\n");
+    }
 }
 
 static void print_status(const calibration_t *cal) {
@@ -729,6 +963,7 @@ static void draw_source_patch_row(const calibration_variant_t *variant,
                                   unsigned phase,
                                   int highlighted_patch,
                                   unsigned frame_counter) {
+    (void)frame_counter;
     int span = right - left + 1;
 
     for (int i = 0; i < count; i++) {
@@ -753,6 +988,7 @@ static void draw_source_checker_rect(const calibration_variant_t *variant,
                                      uint8_t source_b,
                                      unsigned phase,
                                      unsigned frame_counter) {
+    (void)frame_counter;
     int level_a = variant->lut[source_a];
     int level_b = variant->lut[source_b];
 
@@ -787,6 +1023,59 @@ static void draw_anchor_preview(const calibration_variant_t *variant,
         if (i > 0)
             bline(x0, y0, x0, y1);
     }
+}
+
+static void draw_image_preview_half(const calibration_variant_t *variant,
+                                    int left,
+                                    int right,
+                                    int y0,
+                                    int y1,
+                                    unsigned phase) {
+    int width = right - left + 1;
+    int height = y1 - y0 + 1;
+
+    if (!calibration_image_loaded || width <= 0 || height <= 0)
+        return;
+
+    for (int y = 0; y < height; y++) {
+        int src_y0 = (y * BLUE_H) / height;
+        int src_y1 = ((y + 1) * BLUE_H) / height - 1;
+        if (src_y1 < src_y0)
+            src_y1 = src_y0;
+
+        for (int x = 0; x < width; x++) {
+            int src_x0 = (x * WIDTH) / width;
+            int src_x1 = ((x + 1) * WIDTH) / width - 1;
+            int sum = 0;
+            int count = 0;
+
+            if (src_x1 < src_x0)
+                src_x1 = src_x0;
+
+            for (int sy = src_y0; sy <= src_y1; sy++) {
+                for (int sx = src_x0; sx <= src_x1; sx++) {
+                    sum += calibration_image[sy * WIDTH + sx];
+                    count++;
+                }
+            }
+
+            if (count > 0) {
+                int src = sum / count;
+                int level = variant->lut[src];
+                if (pdm_on_level(left + x, y0 + y, level, phase))
+                    bpx(left + x, y0 + y);
+            }
+        }
+    }
+}
+
+static void draw_image_preview(const calibration_t *cal, unsigned phase) {
+    if (!calibration_image_loaded)
+        return;
+
+    draw_image_preview_half(&cal->variants[0], 0, 63, IMAGE_Y0, IMAGE_Y1, phase);
+    draw_image_preview_half(&cal->variants[1], 64, 127, IMAGE_Y0, IMAGE_Y1, phase);
+    bline(63, IMAGE_Y0, 63, IMAGE_Y1);
 }
 
 static void draw_wizard_preview_half(const calibration_variant_t *variant,
@@ -854,6 +1143,7 @@ static void draw_calibration_view(const calibration_t *cal, unsigned phase, unsi
     bline(63, RAMP_Y0, 63, RAMP_Y1);
 
     draw_wizard_preview(cal, phase, frame_counter);
+    draw_image_preview(cal, phase);
 }
 
 static void handle_key(calibration_t *cal, int ch) {
@@ -909,6 +1199,7 @@ int main(int argc, char *argv[]) {
     cal.active_variant = 0;
     cal.question_round = 0;
     rebuild_anchors_from_curve(&cal);
+    calibration_image_loaded = (try_load_calibration_png(argv[0]) == 0);
     for (int i = 0; i < WIZARD_STEP_COUNT; i++)
         variant_from_current(&cal, &cal.step_history[i]);
     generate_candidates(&cal);
@@ -922,6 +1213,10 @@ int main(int argc, char *argv[]) {
     }
 
     print_controls();
+    if (calibration_image_loaded)
+        fprintf(stderr, "Loaded calibration.png. The photo is shown below the test pattern.\n");
+    else
+        fprintf(stderr, "calibration.png not loaded. The wizard will use the built-in test patterns only.\n");
     print_wizard_step(&cal);
     print_status(&cal);
 
