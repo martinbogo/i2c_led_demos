@@ -842,7 +842,8 @@ static void render_elevated_luma(ElevatedFrameCache *cache) {
                     int idx = y * WIDTH + x;
                     int top_offset = y - sy;
                     float shell_t = 1.0f - clampf_local((float)top_offset / (float)shell_rows, 0.0f, 1.0f);
-                    float face_t = smoothstep_local(clampf_local((float)top_offset / 7.0f, 0.0f, 1.0f));
+                    float face_rows = depth < 8.0f ? 14.0f : depth < 22.0f ? 9.0f : 7.0f;
+                    float face_t = smoothstep_local(clampf_local((float)top_offset / face_rows, 0.0f, 1.0f));
                     float pixel_luma;
 
                     if (is_land) {
@@ -853,7 +854,7 @@ static void render_elevated_luma(ElevatedFrameCache *cache) {
                         float contour = fabsf(fractf_local((h + depth * 0.16f) * 0.33f) - 0.5f) < 0.10f ? 1.0f : 0.0f;
                         float base_luma = depth < 8.0f ? 0.70f : depth < 18.0f ? 0.55f : depth < 38.0f ? 0.41f : 0.28f;
                         float surface_luma = mixf_local(base_luma * 0.72f, 0.18f + sun * 0.70f, 0.58f);
-                        float interior_luma = base_luma * 0.22f + 0.05f + (1.0f - ridge) * 0.03f;
+                        float interior_luma = base_luma * 0.22f + 0.05f + sun * 0.14f + (1.0f - ridge) * 0.03f;
                         float tex = ((int)floorf(wx * 0.45f) + (int)floorf(wz * 0.32f) + top_offset) % 5 == 0 ? 0.04f : -0.02f;
 
                         surface_luma += ridge * 0.05f;
@@ -865,7 +866,7 @@ static void render_elevated_luma(ElevatedFrameCache *cache) {
                         if (top_offset == 0) pixel_luma += 0.08f + ridge * 0.06f;
                         if (contour > 0.5f && top_offset == 0) pixel_luma = fmaxf(pixel_luma, 0.64f + 0.10f * snow_cover);
                         if (top_offset > 4)
-                            pixel_luma -= 0.06f * smoothstep_local(clampf_local((float)(top_offset - 4) / 5.0f, 0.0f, 1.0f));
+                            pixel_luma -= (depth < 10.0f ? 0.03f : 0.06f) * smoothstep_local(clampf_local((float)(top_offset - 4) / 5.0f, 0.0f, 1.0f));
                     } else {
                         float submerged = clampf_local((water_y - h) * 1.3f, 0.0f, 1.0f);
                         float ripple = 0.5f + 0.5f * sinf(wx * 0.22f + p->time * 1.8f)
