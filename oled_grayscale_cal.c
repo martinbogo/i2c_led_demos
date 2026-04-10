@@ -7,19 +7,13 @@
  * - emit a report with both anchor points and an interpolated 256-entry LUT
  *
  * Controls:
- *   q        quit and save report
+ *   1        choose A, the left option
+ *   2        choose B, the right option
+ *   n        accept the current result and move to the next step
+ *   b        go back to the previous step
  *   p        save report immediately
+ *   q        quit and save report
  *   ?        print controls to the terminal
- *   n / b    next / previous wizard step
- *   1 / 2    edit A or B for side-by-side comparison
- *   c        copy the current curve into the other slot and switch to it
- *   a / d    select previous / next anchor
- *   j / k    decrease / increase selected anchor by 1
- *   J / K    decrease / increase selected anchor by 4
- *   [ / ]    decrease / increase gamma by 0.05 and rebuild anchors
- *   - / =    decrease / increase gain by 0.05 and rebuild anchors
- *   , / .    decrease / increase bias by 1 code value and rebuild anchors
- *   r        rebuild anchors from current gamma / gain / bias
  */
 
 #include <errno.h>
@@ -59,6 +53,10 @@
 #define CAL_ANCHORS       16
 #define AB_SLOT_COUNT     2
 #define WIZARD_STEP_COUNT 7
+#define RAMP_Y0           0
+#define RAMP_Y1           10
+#define PREVIEW_Y0        14
+#define PREVIEW_Y1        47
 #define REPORT_FILE       "oled_gamma_calibration.txt"
 
 #ifndef M_PI
@@ -77,12 +75,9 @@ typedef enum {
 
 typedef struct {
     const char *title;
-    const char *what_to_look_for;
-    const char *adjust_first;
-    const char *why;
-    const char *ab_test;
-    const char *pattern;
-    int suggested_anchor;
+    const char *look_at;
+    const char *better_means;
+    const char *when_done;
 } wizard_step_t;
 
 typedef struct {
@@ -100,7 +95,9 @@ typedef struct {
     int selected;
     int wizard_step;
     int active_variant;
+    int question_round;
     calibration_variant_t variants[AB_SLOT_COUNT];
+    calibration_variant_t step_history[WIZARD_STEP_COUNT];
     uint8_t anchors[CAL_ANCHORS];
     uint8_t lut[256];
 } calibration_t;
@@ -121,66 +118,45 @@ static const uint8_t temporal_order[PDM_PHASES] = { 0, 2, 1 };
 static const wizard_step_t wizard_steps[WIZARD_STEP_COUNT] = {
     {
         "OVERVIEW",
-        "Press c to copy the current result into the other slot. Press 1 or 2 to choose the slot you want to edit. Change only one control.",
-        "Compare A on the left against B on the right. Keep one side unchanged so the comparison stays clean.",
-        "The top ramp should get steadily brighter from left to right, with no dark dip and no sudden bright jump. In the row of 16 bars below it, each bar should look as bright as or brighter than the bar just before it. No bar should suddenly look darker than the bar to its left.",
-        "If the whole curve bends the wrong way, use [ ] for gamma, - = for gain, or , . for bias. If only one small region looks wrong, use a/d and j/k to trim one anchor.",
-        "Look at the full ramp on top and the row of 16 bars below it.",
-        8,
+        "the two full ramps and the two rows of bars.",
+        "Pick the side where the ramp rises more evenly from black to white, and where no bar in the row below suddenly looks darker than the bar before it.",
+        "Press n when both sides look close and the whole curve looks smooth enough.",
     },
     {
         "BLACK FLOOR",
-        "Press c to copy the current result into the other slot. In the new slot, change bias or gain by one small step.",
-        "Compare the two sides. Keep only the side that gives you a cleaner black floor.",
-        "Patch 0 should stay fully black. Patches 1 through 4 should appear one at a time as faint, separate steps, without one patch suddenly becoming much brighter than the rest.",
-        "If every dark patch is invisible, raise bias or gain slightly. If black starts to glow, lower bias or gain. If only the first few patches are wrong, select anchor 2 and trim it.",
-        "Look at patches 0 1 2 3 4 6 8 12. Start with patch 0, then watch the first few dark patches appear.",
-        1,
+        "the darkest boxes: 0 1 2 3 4 6 8 12.",
+        "Pick the side where box 0 stays black and the next few boxes appear one by one without a sudden jump.",
+        "Press n when black looks clean and the first dark boxes are easy enough to tell apart.",
     },
     {
         "SHADOWS",
-        "Press c to copy the current result into the other slot. In the new slot, adjust anchors 2 through 4 one small step at a time.",
-        "Compare A and B after each small change. Keep the side that separates the dark boxes more evenly.",
-        "Each dark patch should look distinct from the next. The shadow ramp should rise gently out of black, without one box jumping much brighter than its neighbors.",
-        "If the whole shadow region is compressed, change gamma slightly. If only one part of the dark region is uneven, leave gamma alone and trim anchors 2 through 4 instead.",
-        "Look at patches 0 4 8 12 16 24 32 40.",
-        2,
+        "the dark boxes: 0 4 8 12 16 24 32 40.",
+        "Pick the side where the dark boxes separate more evenly and no single box jumps much brighter than the one before it.",
+        "Press n when the dark end rises gently out of black and the boxes look evenly spaced.",
     },
     {
         "MIDTONES",
-        "Press c to copy the current result into the other slot. In the new slot, adjust anchors 6 through 9 or make one small gamma change.",
-        "Compare both sides and keep the one whose middle boxes look more evenly spaced.",
-        "The middle boxes should brighten at a steady pace. There should be no flat section where several boxes look the same and no sudden jump where one box leaps ahead.",
-        "If the whole middle looks too dim or too bright, change gamma slightly. If one local section looks wrong, leave gamma alone and trim anchors 6 through 9.",
-        "Look at patches 48 64 80 96 112 128 144 160.",
-        6,
+        "the middle boxes: 48 64 80 96 112 128 144 160.",
+        "Pick the side where the middle boxes brighten at a steadier pace, with no flat section and no sudden leap.",
+        "Press n when the middle of the curve looks even and natural.",
     },
     {
         "HIGHLIGHTS",
-        "Press c to copy the current result into the other slot. In the new slot, adjust anchors 11 through 14 or lower gain slightly.",
-        "Compare both sides and keep the one that preserves more bright-step separation.",
-        "The bright boxes should stay separate until very near white. The last box, 255, should still reach full white instead of stopping short.",
-        "If several bright boxes merge too early, lower gain or spread anchors 11 through 14. If the whole top end looks too dim, raise gain slightly.",
-        "Look at patches 176 192 208 224 236 244 250 255.",
-        12,
+        "the brightest boxes: 176 192 208 224 236 244 250 255.",
+        "Pick the side where the bright boxes stay separate longer, but the last box still reaches full white.",
+        "Press n when the top end is bright enough and the last few boxes do not merge too early.",
     },
     {
         "STABILITY",
-        "Press c to copy the current result into the other slot. In the new slot, smooth the nearby anchors by one small step.",
-        "Watch both sides for a few seconds. Keep the side that looks calmer and more solid.",
-        "The checker blocks should look steady instead of sparkling or shimmering. A small loss of contrast is acceptable if the flicker becomes noticeably lower.",
-        "If one checker block sparkles, smooth the nearby anchors instead of pushing the levels farther apart.",
-        "Look at checker pairs 4/8, 12/16, 224/232, 244/252.",
-        12,
+        "the checker pairs 4/8, 12/16, 224/232, and 244/252.",
+        "Pick the side that looks steadier and less sparkly, even if it gives up a small amount of contrast.",
+        "Press n when the checker blocks look calm enough.",
     },
     {
         "REVIEW",
-        "Choose the better side with 1 or 2. Then scan the whole curve from black to white one last time.",
-        "If one area still looks wrong, go back with b or n and fix that step. Save with p when the full curve looks right.",
-        "The full ramp should rise smoothly from black to white. In the row of 16 bars below it, each bar should stay the same brightness or get brighter as you move to the right. No bar should suddenly look darker than the one before it, and no one region should stand out as obviously wrong.",
-        "If one small area still looks wrong, return to that step and adjust the matching anchors. If the whole curve feels off, make one small global change and compare again.",
-        "Look at the full ramp on top and the row of 16 bars below it.",
-        8,
+        "the two full ramps and the two rows of bars again.",
+        "Pick the side that looks better overall from black to white, without one area standing out as obviously wrong.",
+        "Press p to save when the full curve looks right. Press b if you need to revisit an earlier step.",
     },
 };
 
@@ -409,128 +385,239 @@ static void current_from_variant(calibration_t *cal, const calibration_variant_t
     memcpy(cal->lut, variant->lut, sizeof(cal->lut));
 }
 
-static void sync_active_variant(calibration_t *cal) {
-    variant_from_current(cal, &cal->variants[cal->active_variant]);
+static void rebuild_variant_lut(calibration_variant_t *variant) {
+    for (int x = 0; x < 256; x++) {
+        float pos = (float)x * (float)(CAL_ANCHORS - 1) / 255.0f;
+        int idx = (int)floorf(pos);
+        float t = pos - (float)idx;
+        if (idx >= CAL_ANCHORS - 1) {
+            variant->lut[x] = variant->anchors[CAL_ANCHORS - 1];
+        } else {
+            float v = variant->anchors[idx] + (variant->anchors[idx + 1] - variant->anchors[idx]) * t;
+            variant->lut[x] = (uint8_t)clampi((int)lroundf(v), 0, 255);
+        }
+    }
+    for (int x = 1; x < 256; x++) {
+        if (variant->lut[x] < variant->lut[x - 1]) variant->lut[x] = variant->lut[x - 1];
+    }
 }
 
-static void load_variant(calibration_t *cal, int variant) {
-    int clamped = clampi(variant, 0, AB_SLOT_COUNT - 1);
-
-    sync_active_variant(cal);
-    cal->active_variant = clamped;
-    current_from_variant(cal, &cal->variants[clamped]);
+static void normalize_variant(calibration_variant_t *variant) {
+    variant->anchors[0] = 0;
+    for (int i = 1; i < CAL_ANCHORS - 1; i++) {
+        variant->anchors[i] = (uint8_t)clampi(variant->anchors[i], 0, 255);
+        if (variant->anchors[i] < variant->anchors[i - 1])
+            variant->anchors[i] = variant->anchors[i - 1];
+    }
+    variant->anchors[CAL_ANCHORS - 1] = 255;
+    rebuild_variant_lut(variant);
 }
 
-static void print_variant_selection(const calibration_t *cal) {
+static void apply_region_delta(calibration_variant_t *variant, float center, float width, int delta) {
+    uint8_t original[CAL_ANCHORS];
+    memcpy(original, variant->anchors, sizeof(original));
+
+    for (int i = 1; i < CAL_ANCHORS - 1; i++) {
+        float x = (float)i / (float)(CAL_ANCHORS - 1);
+        float dist = fabsf(x - center) / width;
+        float weight = dist >= 1.0f ? 0.0f : (1.0f - dist);
+        int v = (int)lroundf((float)original[i] + (float)delta * weight);
+        variant->anchors[i] = (uint8_t)clampi(v, 0, 255);
+    }
+
+    normalize_variant(variant);
+}
+
+static void smooth_region(calibration_variant_t *variant, float center, float width, float amount) {
+    uint8_t original[CAL_ANCHORS];
+    memcpy(original, variant->anchors, sizeof(original));
+
+    for (int i = 1; i < CAL_ANCHORS - 1; i++) {
+        float x = (float)i / (float)(CAL_ANCHORS - 1);
+        float dist = fabsf(x - center) / width;
+        float weight = dist >= 1.0f ? 0.0f : (1.0f - dist);
+        float average = (original[i - 1] + original[i] + original[i + 1]) / 3.0f;
+        float v = original[i] + (average - original[i]) * amount * weight;
+        variant->anchors[i] = (uint8_t)clampi((int)lroundf(v), 0, 255);
+    }
+
+    normalize_variant(variant);
+}
+
+static void sharpen_region(calibration_variant_t *variant, float center, float width, float amount) {
+    uint8_t original[CAL_ANCHORS];
+    memcpy(original, variant->anchors, sizeof(original));
+
+    for (int i = 1; i < CAL_ANCHORS - 1; i++) {
+        float x = (float)i / (float)(CAL_ANCHORS - 1);
+        float dist = fabsf(x - center) / width;
+        float weight = dist >= 1.0f ? 0.0f : (1.0f - dist);
+        float average = (original[i - 1] + original[i] + original[i + 1]) / 3.0f;
+        float v = original[i] + (original[i] - average) * amount * weight;
+        variant->anchors[i] = (uint8_t)clampi((int)lroundf(v), 0, 255);
+    }
+
+    normalize_variant(variant);
+}
+
+static int step_delta(wizard_step_id_t step, int round) {
+    static const int global_steps[] = { 18, 12, 8, 5, 3 };
+    static const int local_steps[] = { 14, 9, 6, 4, 2 };
+    static const int black_steps[] = { 10, 7, 5, 3, 2 };
+    int idx = clampi(round, 0, 4);
+
+    switch (step) {
+        case WIZARD_STEP_BLACK:
+            return black_steps[idx];
+        case WIZARD_STEP_SHADOWS:
+        case WIZARD_STEP_MIDTONES:
+        case WIZARD_STEP_HIGHLIGHTS:
+            return local_steps[idx];
+        case WIZARD_STEP_OVERVIEW:
+        case WIZARD_STEP_REVIEW:
+        default:
+            return global_steps[idx];
+    }
+}
+
+static float stability_amount(int round) {
+    static const float amounts[] = { 0.75f, 0.60f, 0.45f, 0.35f, 0.25f };
+    return amounts[clampi(round, 0, 4)];
+}
+
+static void generate_candidates(calibration_t *cal) {
+    calibration_variant_t base;
+    int delta = step_delta((wizard_step_id_t)cal->wizard_step, cal->question_round);
+
+    variant_from_current(cal, &base);
+    cal->variants[0] = base;
+    cal->variants[1] = base;
+
+    switch ((wizard_step_id_t)cal->wizard_step) {
+        case WIZARD_STEP_BLACK:
+            apply_region_delta(&cal->variants[0], 0.08f, 0.22f, -delta);
+            apply_region_delta(&cal->variants[1], 0.08f, 0.22f, +delta);
+            break;
+        case WIZARD_STEP_SHADOWS:
+            apply_region_delta(&cal->variants[0], 0.20f, 0.24f, -delta);
+            apply_region_delta(&cal->variants[1], 0.20f, 0.24f, +delta);
+            break;
+        case WIZARD_STEP_MIDTONES:
+            apply_region_delta(&cal->variants[0], 0.50f, 0.28f, -delta);
+            apply_region_delta(&cal->variants[1], 0.50f, 0.28f, +delta);
+            break;
+        case WIZARD_STEP_HIGHLIGHTS:
+            apply_region_delta(&cal->variants[0], 0.82f, 0.22f, -delta);
+            apply_region_delta(&cal->variants[1], 0.82f, 0.22f, +delta);
+            break;
+        case WIZARD_STEP_STABILITY: {
+            float amount = stability_amount(cal->question_round);
+            smooth_region(&cal->variants[0], 0.20f, 0.24f, amount);
+            smooth_region(&cal->variants[0], 0.82f, 0.22f, amount);
+            sharpen_region(&cal->variants[1], 0.20f, 0.24f, amount * 0.45f);
+            sharpen_region(&cal->variants[1], 0.82f, 0.22f, amount * 0.45f);
+            break;
+        }
+        case WIZARD_STEP_REVIEW:
+            apply_region_delta(&cal->variants[0], 0.50f, 0.60f, -delta / 2);
+            apply_region_delta(&cal->variants[1], 0.50f, 0.60f, +delta / 2);
+            break;
+        case WIZARD_STEP_OVERVIEW:
+        default:
+            apply_region_delta(&cal->variants[0], 0.50f, 0.60f, -delta);
+            apply_region_delta(&cal->variants[1], 0.50f, 0.60f, +delta);
+            break;
+    }
+}
+
+static void print_choice_feedback(int choice) {
     fprintf(stderr,
-            "Edit slot %c. Look at A on the left and B on the right.\n",
-            variant_name(cal->active_variant));
+            "\nYou picked %c. I made the next comparison for you.\n",
+            variant_name(choice));
 }
 
-static void fork_to_other_variant(calibration_t *cal) {
-    int source = cal->active_variant;
-    int target = source ^ 1;
+static void print_wizard_step(const calibration_t *cal);
 
-    sync_active_variant(cal);
-    cal->variants[target] = cal->variants[source];
-    cal->active_variant = target;
-    current_from_variant(cal, &cal->variants[target]);
-    fprintf(stderr,
-            "Copied slot %c into slot %c. Now edit slot %c. Make one small change, then compare A on the left against B on the right.\n",
-            variant_name(source), variant_name(target), variant_name(target));
+static void choose_candidate(calibration_t *cal, int choice) {
+    current_from_variant(cal, &cal->variants[choice]);
+    cal->active_variant = choice;
+    variant_from_current(cal, &cal->step_history[cal->wizard_step]);
+    cal->question_round++;
+    print_choice_feedback(choice);
+    generate_candidates(cal);
+    print_wizard_step(cal);
 }
 
 static void print_wizard_step(const calibration_t *cal) {
     const wizard_step_t *step = &wizard_steps[cal->wizard_step];
 
     fprintf(stderr,
-            "\nWizard step %d/%d: %s\n"
-            "  Look at: %s\n"
-            "  Do this: %s\n"
-            "  Then do this: %s\n"
-            "  You should see: %s\n"
-            "  Tune it this way: %s\n"
-            "  Slot controls: 1 edit A, 2 edit B, c forks the current curve into the other slot.\n"
-            "  Current slot: %c\n\n",
+            "\nStep %d/%d: %s\n"
+            "  Look at %s\n"
+            "  Press 1 if A is better. Press 2 if B is better.\n"
+            "  Better means: %s\n"
+            "  After you choose, I will make the next comparison for you.\n"
+            "  %s\n"
+            "  Other keys: n next step, b previous step, p save, q quit, ? help.\n\n",
             cal->wizard_step + 1, WIZARD_STEP_COUNT,
             step->title,
-            step->pattern,
-            step->what_to_look_for,
-            step->adjust_first,
-            step->why,
-            step->ab_test,
-            variant_name(cal->active_variant));
+            step->look_at,
+            step->better_means,
+            step->when_done);
 }
 
-static void set_wizard_step(calibration_t *cal, int step) {
-    int clamped = clampi(step, 0, WIZARD_STEP_COUNT - 1);
+static void change_wizard_step(calibration_t *cal, int delta) {
+    int new_step = clampi(cal->wizard_step + delta, 0, WIZARD_STEP_COUNT - 1);
 
-    if (cal->wizard_step == clamped) {
+    if (new_step == cal->wizard_step) {
+        if (delta > 0 && cal->wizard_step == WIZARD_STEP_COUNT - 1)
+            fprintf(stderr, "\nThis is the last step. Press p to save or q to save and quit.\n");
         print_wizard_step(cal);
         return;
     }
 
-    cal->wizard_step = clamped;
-    if (wizard_steps[clamped].suggested_anchor >= 0)
-        cal->selected = clampi(wizard_steps[clamped].suggested_anchor, 0, CAL_ANCHORS - 1);
-    print_wizard_step(cal);
-}
+    if (delta > 0)
+        variant_from_current(cal, &cal->step_history[new_step]);
 
-static void change_wizard_step(calibration_t *cal, int delta) {
-    set_wizard_step(cal, cal->wizard_step + delta);
+    cal->wizard_step = new_step;
+    current_from_variant(cal, &cal->step_history[new_step]);
+    cal->question_round = 0;
+    generate_candidates(cal);
+    print_wizard_step(cal);
 }
 
 static void print_controls(void) {
     fprintf(stderr,
-            "\nOLED grayscale calibration controls\n"
-            "  q        quit and save report\n"
+            "\nOLED grayscale calibration\n"
+            "  1        choose A, the left option\n"
+            "  2        choose B, the right option\n"
+            "  n        keep the current result and move to the next step\n"
+            "  b        go back to the previous step\n"
             "  p        save report immediately\n"
-            "  ?        show this help\n"
-            "  n / b    next / previous wizard step\n"
-            "  1 / 2    edit slot A or B\n"
-            "  c        copy the current slot into the other one and switch to it\n"
-            "  a / d    select previous / next anchor\n"
-            "  j / k    decrease / increase selected anchor by 1\n"
-            "  J / K    decrease / increase selected anchor by 4\n"
-            "  [ / ]    decrease / increase gamma by 0.05 and rebuild\n"
-            "  - / =    decrease / increase gain by 0.05 and rebuild\n"
-            "  , / .    decrease / increase bias by 1 and rebuild\n"
-            "  r        rebuild anchors from current gamma / gain / bias\n\n"
-            "Calibration workflow:\n"
-            "  1. Press n or b to choose a step.\n"
-            "  2. Press c to copy the current result into the other slot.\n"
-            "  3. Press 1 or 2 to choose which slot you want to edit.\n"
-            "  4. Change one control only.\n"
-            "  5. Look at A on the left and B on the right.\n"
-            "  6. Keep the side that looks better, then move to the next step.\n\n");
+            "  q        quit and save report\n"
+            "  ?        show this help\n\n"
+            "How to use it:\n"
+            "  1. Look at A on the left and B on the right.\n"
+            "  2. Press 1 if A is better. Press 2 if B is better.\n"
+            "  3. I will make the next comparison for you.\n"
+            "  4. Press n when the current step looks good enough.\n\n");
 }
 
 static void print_status(const calibration_t *cal) {
     const wizard_step_t *step = &wizard_steps[cal->wizard_step];
 
     fprintf(stderr,
-            "\rW %d/%d %-11s S %c  G %.2f  C %.2f  B %+03d  A %02d/%02d = %03u        ",
-            cal->wizard_step + 1, WIZARD_STEP_COUNT, step->title, variant_name(cal->active_variant),
-            cal->gamma, cal->gain, cal->bias,
-            cal->selected + 1, CAL_ANCHORS, cal->anchors[cal->selected]);
+            "\rStep %d/%d %-11s  1=A  2=B  n=next  b=back  p=save  q=quit        ",
+            cal->wizard_step + 1, WIZARD_STEP_COUNT, step->title);
     fflush(stderr);
 }
 
 static void rebuild_lut(calibration_t *cal) {
-    for (int x = 0; x < 256; x++) {
-        float pos = (float)x * (float)(CAL_ANCHORS - 1) / 255.0f;
-        int idx = (int)floorf(pos);
-        float t = pos - (float)idx;
-        if (idx >= CAL_ANCHORS - 1) {
-            cal->lut[x] = cal->anchors[CAL_ANCHORS - 1];
-        } else {
-            float v = cal->anchors[idx] + (cal->anchors[idx + 1] - cal->anchors[idx]) * t;
-            cal->lut[x] = (uint8_t)clampi((int)lroundf(v), 0, 255);
-        }
-    }
-    for (int x = 1; x < 256; x++) {
-        if (cal->lut[x] < cal->lut[x - 1]) cal->lut[x] = cal->lut[x - 1];
-    }
+    calibration_variant_t variant;
+
+    variant_from_current(cal, &variant);
+    rebuild_variant_lut(&variant);
+    memcpy(cal->lut, variant.lut, sizeof(cal->lut));
 }
 
 static void rebuild_anchors_from_curve(calibration_t *cal) {
@@ -545,15 +632,6 @@ static void rebuild_anchors_from_curve(calibration_t *cal) {
         if (cal->anchors[i] < cal->anchors[i - 1]) cal->anchors[i] = cal->anchors[i - 1];
     }
     cal->anchors[CAL_ANCHORS - 1] = 255;
-    rebuild_lut(cal);
-}
-
-static void adjust_anchor(calibration_t *cal, int delta) {
-    int idx = cal->selected;
-    int lo = idx == 0 ? 0 : cal->anchors[idx - 1];
-    int hi = idx == CAL_ANCHORS - 1 ? 255 : cal->anchors[idx + 1];
-    int v = cal->anchors[idx] + delta;
-    cal->anchors[idx] = (uint8_t)clampi(v, lo, hi);
     rebuild_lut(cal);
 }
 
@@ -596,7 +674,7 @@ static int save_report(const calibration_t *cal) {
     fprintf(fp, "};\n");
 
     fclose(fp);
-    fprintf(stderr, "\nSaved %s from slot %c\n", REPORT_FILE, variant_name(cal->active_variant));
+    fprintf(stderr, "\nSaved %s\n", REPORT_FILE);
     print_status(cal);
     return 0;
 }
@@ -621,6 +699,21 @@ static void draw_blue_level_rect(int x0, int y0, int x1, int y1, int level, unsi
     if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
     for (int y = y0; y <= y1; y++) {
         for (int x = x0; x <= x1; x++) {
+            if (pdm_on_level(x, y, level, phase)) bpx(x, y);
+        }
+    }
+}
+
+static void draw_half_ramp(const calibration_variant_t *variant,
+                           int left,
+                           int right,
+                           int y0,
+                           int y1,
+                           unsigned phase) {
+    for (int y = y0; y <= y1; y++) {
+        for (int x = left; x <= right; x++) {
+            int src = ((x - left) * 255) / ((right - left) ? (right - left) : 1);
+            int level = variant->lut[src];
             if (pdm_on_level(x, y, level, phase)) bpx(x, y);
         }
     }
@@ -684,28 +777,16 @@ static void draw_anchor_preview(const calibration_variant_t *variant,
                                 int y0,
                                 int y1,
                                 unsigned phase) {
-    int prev = variant->anchors[selected > 0 ? selected - 1 : 0];
-    int curr = variant->anchors[selected];
-    int next = variant->anchors[selected < CAL_ANCHORS - 1 ? selected + 1 : CAL_ANCHORS - 1];
+    (void)selected;
     int span = right - left + 1;
-    int split1 = left + span / 4 - 1;
-    int split2 = left + span / 2 - 1;
-    int split3 = left + (span * 3) / 4 - 1;
 
-    draw_blue_level_rect(left, y0, split1, y1, prev, phase);
-    draw_blue_level_rect(split1 + 1, y0, split2, y1, curr, phase);
-    draw_blue_level_rect(split2 + 1, y0, split3, y1, next, phase);
-
-    for (int y = y0; y <= y1; y++) {
-        for (int x = split3 + 1; x <= right; x++) {
-            int checker = (((x >> 2) ^ (y >> 2)) & 1) ? curr : next;
-            if (pdm_on_level(x, y, checker, phase)) bpx(x, y);
-        }
+    for (int i = 0; i < CAL_ANCHORS; i++) {
+        int x0 = left + (i * span) / CAL_ANCHORS;
+        int x1 = left + ((i + 1) * span) / CAL_ANCHORS - 1;
+        draw_blue_level_rect(x0, y0, x1, y1, variant->anchors[i], phase);
+        if (i > 0)
+            bline(x0, y0, x0, y1);
     }
-
-    bline(split1, y0, split1, y1);
-    bline(split2, y0, split2, y1);
-    bline(split3, y0, split3, y1);
 }
 
 static void draw_wizard_preview_half(const calibration_variant_t *variant,
@@ -719,33 +800,33 @@ static void draw_wizard_preview_half(const calibration_variant_t *variant,
         case WIZARD_STEP_BLACK:
             draw_source_patch_row(variant, wizard_black_values,
                                   (int)(sizeof(wizard_black_values) / sizeof(wizard_black_values[0])),
-                                  left, right, 28, 47, phase, 1, frame_counter);
+                                  left, right, PREVIEW_Y0, PREVIEW_Y1, phase, 1, frame_counter);
             break;
         case WIZARD_STEP_SHADOWS:
             draw_source_patch_row(variant, wizard_shadow_values,
                                   (int)(sizeof(wizard_shadow_values) / sizeof(wizard_shadow_values[0])),
-                                  left, right, 28, 47, phase, 2, frame_counter);
+                                  left, right, PREVIEW_Y0, PREVIEW_Y1, phase, 2, frame_counter);
             break;
         case WIZARD_STEP_MIDTONES:
             draw_source_patch_row(variant, wizard_midtone_values,
                                   (int)(sizeof(wizard_midtone_values) / sizeof(wizard_midtone_values[0])),
-                                  left, right, 28, 47, phase, 3, frame_counter);
+                                  left, right, PREVIEW_Y0, PREVIEW_Y1, phase, 3, frame_counter);
             break;
         case WIZARD_STEP_HIGHLIGHTS:
             draw_source_patch_row(variant, wizard_highlight_values,
                                   (int)(sizeof(wizard_highlight_values) / sizeof(wizard_highlight_values[0])),
-                                  left, right, 28, 47, phase, 6, frame_counter);
+                                  left, right, PREVIEW_Y0, PREVIEW_Y1, phase, 6, frame_counter);
             break;
         case WIZARD_STEP_STABILITY:
-            draw_source_checker_rect(variant, left, 28, left + 15, 47, 4, 8, phase, frame_counter);
-            draw_source_checker_rect(variant, left + 16, 28, left + 31, 47, 12, 16, phase, frame_counter);
-            draw_source_checker_rect(variant, left + 32, 28, left + 47, 47, 224, 232, phase, frame_counter);
-            draw_source_checker_rect(variant, left + 48, 28, right, 47, 244, 252, phase, frame_counter);
+            draw_source_checker_rect(variant, left, PREVIEW_Y0, left + 15, PREVIEW_Y1, 4, 8, phase, frame_counter);
+            draw_source_checker_rect(variant, left + 16, PREVIEW_Y0, left + 31, PREVIEW_Y1, 12, 16, phase, frame_counter);
+            draw_source_checker_rect(variant, left + 32, PREVIEW_Y0, left + 47, PREVIEW_Y1, 224, 232, phase, frame_counter);
+            draw_source_checker_rect(variant, left + 48, PREVIEW_Y0, right, PREVIEW_Y1, 244, 252, phase, frame_counter);
             break;
         case WIZARD_STEP_OVERVIEW:
         case WIZARD_STEP_REVIEW:
         default:
-            draw_anchor_preview(variant, selected, left, right, 28, 47, phase);
+            draw_anchor_preview(variant, selected, left, right, PREVIEW_Y0, PREVIEW_Y1, phase);
             break;
     }
 }
@@ -755,45 +836,22 @@ static void draw_wizard_preview(const calibration_t *cal, unsigned phase, unsign
                              0, 63, phase, frame_counter);
     draw_wizard_preview_half(&cal->variants[1], cal->selected, (wizard_step_id_t)cal->wizard_step,
                              64, 127, phase, frame_counter);
-    bline(63, 28, 63, 47);
-    if (cal->active_variant == 0)
-        draw_blue_rect_outline(0, 28, 63, 47);
-    else
-        draw_blue_rect_outline(64, 28, 127, 47);
+    bline(63, PREVIEW_Y0, 63, PREVIEW_Y1);
 }
 
 static void draw_calibration_view(const calibration_t *cal, unsigned phase, unsigned frame_counter) {
     char line0[32];
     char line1[32];
     const wizard_step_t *step = &wizard_steps[cal->wizard_step];
-    char active = variant_name(cal->active_variant);
-    char other = variant_name(cal->active_variant ^ 1);
 
     snprintf(line0, sizeof(line0), "%d/%d %s", cal->wizard_step + 1, WIZARD_STEP_COUNT, step->title);
-    snprintf(line1, sizeof(line1), "%c* %c G%.2f C%.2f", active, other, cal->gamma, cal->gain);
+    snprintf(line1, sizeof(line1), "1=A 2=B N=OK");
     draw_str(0, 0, line0);
     draw_str(0, 8, line1);
 
-    for (int y = 0; y < 12; y++) {
-        for (int x = 0; x < WIDTH; x++) {
-            int src = (x * 255) / (WIDTH - 1);
-            int level = cal->lut[src];
-            if (pdm_on_level(x, y, level, phase)) bpx(x, y);
-        }
-    }
-
-    for (int i = 0; i < CAL_ANCHORS; i++) {
-        int x0 = i * 8;
-        int x1 = x0 + 7;
-        draw_blue_level_rect(x0, 12, x1, 27, cal->anchors[i], phase);
-    }
-
-    int x0 = cal->selected * 8;
-    int x1 = x0 + 7;
-    bline(x0, 11, x0, 28);
-    bline(x1, 11, x1, 28);
-    bline(x0, 11, x1, 11);
-    bline(x0, 28, x1, 28);
+    draw_half_ramp(&cal->variants[0], 0, 63, RAMP_Y0, RAMP_Y1, phase);
+    draw_half_ramp(&cal->variants[1], 64, 127, RAMP_Y0, RAMP_Y1, phase);
+    bline(63, RAMP_Y0, 63, RAMP_Y1);
 
     draw_wizard_preview(cal, phase, frame_counter);
 }
@@ -809,63 +867,10 @@ static void handle_key(calibration_t *cal, int ch) {
             change_wizard_step(cal, +1);
             break;
         case '1':
-            load_variant(cal, 0);
-            print_variant_selection(cal);
+            choose_candidate(cal, 0);
             break;
         case '2':
-            load_variant(cal, 1);
-            print_variant_selection(cal);
-            break;
-        case 'c':
-        case 'C':
-            fork_to_other_variant(cal);
-            break;
-        case 'a':
-            cal->selected = clampi(cal->selected - 1, 0, CAL_ANCHORS - 1);
-            break;
-        case 'd':
-            cal->selected = clampi(cal->selected + 1, 0, CAL_ANCHORS - 1);
-            break;
-        case 'j':
-            adjust_anchor(cal, -1);
-            break;
-        case 'k':
-            adjust_anchor(cal, +1);
-            break;
-        case 'J':
-            adjust_anchor(cal, -4);
-            break;
-        case 'K':
-            adjust_anchor(cal, +4);
-            break;
-        case '[':
-            cal->gamma = clampf_local(cal->gamma - 0.05f, 0.40f, 3.00f);
-            rebuild_anchors_from_curve(cal);
-            break;
-        case ']':
-            cal->gamma = clampf_local(cal->gamma + 0.05f, 0.40f, 3.00f);
-            rebuild_anchors_from_curve(cal);
-            break;
-        case '-':
-            cal->gain = clampf_local(cal->gain - 0.05f, 0.20f, 2.50f);
-            rebuild_anchors_from_curve(cal);
-            break;
-        case '=':
-        case '+':
-            cal->gain = clampf_local(cal->gain + 0.05f, 0.20f, 2.50f);
-            rebuild_anchors_from_curve(cal);
-            break;
-        case ',':
-            cal->bias = clampi(cal->bias - 1, -64, 64);
-            rebuild_anchors_from_curve(cal);
-            break;
-        case '.':
-            cal->bias = clampi(cal->bias + 1, -64, 64);
-            rebuild_anchors_from_curve(cal);
-            break;
-        case 'r':
-        case 'R':
-            rebuild_anchors_from_curve(cal);
+            choose_candidate(cal, 1);
             break;
         case 'p':
         case 'P':
@@ -882,8 +887,6 @@ static void handle_key(calibration_t *cal, int ch) {
         default:
             break;
     }
-
-    sync_active_variant(cal);
 }
 
 int main(int argc, char *argv[]) {
@@ -904,9 +907,11 @@ int main(int argc, char *argv[]) {
     cal.selected = 8;
     cal.wizard_step = WIZARD_STEP_OVERVIEW;
     cal.active_variant = 0;
+    cal.question_round = 0;
     rebuild_anchors_from_curve(&cal);
-    variant_from_current(&cal, &cal.variants[0]);
-    cal.variants[1] = cal.variants[0];
+    for (int i = 0; i < WIZARD_STEP_COUNT; i++)
+        variant_from_current(&cal, &cal.step_history[i]);
+    generate_candidates(&cal);
 
     signal(SIGINT, stop);
     signal(SIGTERM, stop);
@@ -918,7 +923,6 @@ int main(int argc, char *argv[]) {
 
     print_controls();
     print_wizard_step(&cal);
-    print_variant_selection(&cal);
     print_status(&cal);
 
     i2c_fd = open("/dev/i2c-1", O_RDWR);
