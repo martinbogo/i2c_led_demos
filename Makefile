@@ -5,6 +5,7 @@ COMMON_WARNINGS = -Wall -Wno-implicit-function-declaration
 CFLAGS = -O2 $(COMMON_WARNINGS)
 LDFLAGS =
 LDLIBS = -lm -lz
+OLED_LUT_GENERATOR = generate_oled_lut_header.py
 OLED_LUT_HEADER = oled_build_lut.h
 OLED_CALIBRATION_FILE ?= oled_gamma_calibration.txt
 
@@ -58,7 +59,7 @@ $(DEP_DIR):
 $(DEP_DIR)/%.d: %.c | $(DEP_DIR)
 	@$(CC) $(CFLAGS) -MM -MP -MF $@ -MT $* $<
 
-$(OLED_LUT_HEADER): /Users/martin/Development/i2c_led_demos/generate_oled_lut_header.py FORCE
+$(OLED_LUT_HEADER): $(OLED_LUT_GENERATOR) FORCE
 	$(PYTHON3) $< --output $@ --calibration $(OLED_CALIBRATION_FILE)
 
 # Rule to compile every individual .c file directly into its isolated binary payload
