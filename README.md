@@ -11,6 +11,7 @@ Most of the top-level `.c` files are standalone programs. Each one builds into a
 Included demos:
 
 - `badapple.c` - plays compressed video frames in the 128x48 blue area
+- `anim_v_animator.c` - a storyboard-driven Animator vs. Animation recreation for the 128x64 OLED
 - `bounce.c` - a simple bouncing ball demo
 - `cube.c` - a rotating wireframe cube
 - `horizon.c` - a basic artificial horizon style display
@@ -68,6 +69,7 @@ Each demo builds to its own executable. Run the one you want as root so it can t
 Examples:
 
 ```bash
+sudo ./anim_v_animator
 sudo ./water
 sudo ./st_dashboard
 sudo ./showreel
