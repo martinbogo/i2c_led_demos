@@ -30,6 +30,12 @@ There are also a few helper files:
 - `Dockerfile` - container used by `build.sh`
 - `convert.py` and `convert_48.py` - helper scripts for preparing video assets
 
+There are also Uno Q app folders for the dual-processor board ports:
+
+- `unoq_badapple` - MCU OLED sink plus Linux-side video streamer for the Bad Apple port
+- `unoq_st_dashboard` - MCU OLED sink plus Linux-side LCARS dashboard renderer/telemetry streamer
+- `unoq_st_smartwatch` - MCU OLED sink plus Linux-side LCARS smartwatch renderer/streamer
+
 ## Display assumptions
 
 The demos target a 128x64 SSD1306 OLED connected over I2C at address `0x3C`.
