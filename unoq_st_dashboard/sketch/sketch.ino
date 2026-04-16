@@ -781,29 +781,33 @@ void drawStatsScene(unsigned long nowMs, int scene) {
   }
 }
 
-void dashBegin(uint32_t uptimeMinutes, uint32_t procs, int32_t tempC, int32_t fanValue, uint32_t fanIsRPM,
-               uint32_t armFreqMHz, uint32_t armMaxMHz, uint32_t totalCpu10, uint32_t iowait10, uint32_t load1x10) {
+void dashBegin(uint32_t uptimeMinutes, uint32_t procs, int32_t tempC, int32_t fanValue, uint32_t fanIsRPM) {
   pendingState = currentState;
   pendingState.uptimeMinutes = static_cast<uint16_t>(uptimeMinutes > 65535U ? 65535U : uptimeMinutes);
   pendingState.procs = static_cast<uint16_t>(procs > 65535U ? 65535U : procs);
   pendingState.tempC = tempC;
   pendingState.fanValue = fanValue;
   pendingState.fanIsRPM = fanIsRPM != 0U;
+  pendingDirty = true;
+}
+
+void dashSystem(uint32_t armFreqMHz, uint32_t armMaxMHz, uint32_t totalCpu10, uint32_t iowait10, uint32_t load1x10) {
   pendingState.armFreqMHz = static_cast<int>(armFreqMHz);
   pendingState.armMaxMHz = static_cast<int>(armMaxMHz);
   pendingState.totalCpu10 = static_cast<uint16_t>(totalCpu10 > 1000U ? 1000U : totalCpu10);
   pendingState.iowait10 = static_cast<uint16_t>(iowait10 > 1000U ? 1000U : iowait10);
   pendingState.load1x10 = static_cast<uint16_t>(load1x10 > 999U ? 999U : load1x10);
-  pendingDirty = true;
 }
 
-void dashCores(uint32_t coreCount, uint32_t cpu0, uint32_t cpu1, uint32_t cpu2, uint32_t cpu3,
-               uint32_t freq0, uint32_t freq1, uint32_t freq2, uint32_t freq3) {
+void dashCores(uint32_t coreCount, uint32_t cpu0, uint32_t cpu1, uint32_t cpu2, uint32_t cpu3) {
   pendingState.coreCount = static_cast<int>(coreCount > MAX_CORES ? MAX_CORES : coreCount);
   pendingState.perCore10[0] = static_cast<uint16_t>(cpu0 > 1000U ? 1000U : cpu0);
   pendingState.perCore10[1] = static_cast<uint16_t>(cpu1 > 1000U ? 1000U : cpu1);
   pendingState.perCore10[2] = static_cast<uint16_t>(cpu2 > 1000U ? 1000U : cpu2);
   pendingState.perCore10[3] = static_cast<uint16_t>(cpu3 > 1000U ? 1000U : cpu3);
+}
+
+void dashCoreFreqs(uint32_t freq0, uint32_t freq1, uint32_t freq2, uint32_t freq3) {
   pendingState.coreFreqMHz[0] = static_cast<uint16_t>(freq0 > 65535U ? 65535U : freq0);
   pendingState.coreFreqMHz[1] = static_cast<uint16_t>(freq1 > 65535U ? 65535U : freq1);
   pendingState.coreFreqMHz[2] = static_cast<uint16_t>(freq2 > 65535U ? 65535U : freq2);
@@ -880,7 +884,9 @@ void setup() {
   Bridge.begin();
   Monitor.begin();
   Bridge.provide("dash_begin", dashBegin);
+  Bridge.provide("dash_system", dashSystem);
   Bridge.provide("dash_cores", dashCores);
+  Bridge.provide("dash_core_freqs", dashCoreFreqs);
   Bridge.provide("dash_memory", dashMemory);
   Bridge.provide("dash_storage", dashStorage);
   Bridge.provide("dash_network", dashNetwork);

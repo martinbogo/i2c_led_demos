@@ -475,6 +475,9 @@ def send_snapshot(snapshot: Snapshot) -> None:
         snapshot.temp_c,
         snapshot.fan_value,
         int(snapshot.fan_is_rpm),
+    )
+    Bridge.notify(
+        "dash_system",
         snapshot.arm_freq_mhz,
         snapshot.arm_max_mhz,
         snapshot.total_cpu10,
@@ -488,6 +491,9 @@ def send_snapshot(snapshot: Snapshot) -> None:
         snapshot.per_core10[1],
         snapshot.per_core10[2],
         snapshot.per_core10[3],
+    )
+    Bridge.notify(
+        "dash_core_freqs",
         snapshot.core_freq_mhz[0],
         snapshot.core_freq_mhz[1],
         snapshot.core_freq_mhz[2],
