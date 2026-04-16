@@ -17,13 +17,16 @@ def current_watch_state() -> tuple[int, int, int]:
     return day_seconds, steps, battery
 
 
-def loop() -> None:
-    day_seconds, steps, battery = current_watch_state()
+def watch_sync() -> int:
     try:
-        Bridge.notify("watch_sync", day_seconds, steps, battery)
+        day_seconds, steps, battery = current_watch_state()
+        Bridge.notify("watch_state", day_seconds, steps, battery)
+        return 1
     except Exception as exc:
         print(f"watch sync failed: {exc}", flush=True)
-    time.sleep(0.5)
+        return 0
 
 
-App.run(user_loop=loop)
+Bridge.provide("watch_sync", watch_sync)
+
+App.run()

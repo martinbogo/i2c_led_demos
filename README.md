@@ -33,8 +33,8 @@ There are also a few helper files:
 There are also Uno Q app folders for the dual-processor board ports:
 
 - `unoq_badapple` - MCU OLED sink plus Linux-side video streamer for the Bad Apple port
-- `unoq_st_dashboard` - MCU OLED sink plus Linux-side LCARS dashboard renderer/telemetry streamer
-- `unoq_st_smartwatch` - MCU OLED sink plus Linux-side LCARS smartwatch renderer/streamer
+- `unoq_st_dashboard` - App Lab-native LCARS dashboard with MCU-side OLED rendering and Bridge-fed telemetry snapshots
+- `unoq_st_smartwatch` - App Lab-native LCARS smartwatch with MCU-side OLED rendering and Bridge-fed state updates
 
 ## Display assumptions
 

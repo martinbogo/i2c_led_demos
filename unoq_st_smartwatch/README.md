@@ -6,8 +6,8 @@ The OLED remains MCU-owned on `Wire`, but the rendering is now done locally on t
 
 ## Files
 
-- `python/main.py` - App Lab Python loop that sends compact watch state updates with `Bridge.notify(...)`.
-- `sketch/sketch.ino` - STM32 OLED renderer plus Bridge handlers.
+- `python/main.py` - App Lab Python provider that exposes watch state over Bridge RPC (`watch_sync`).
+- `sketch/sketch.ino` - STM32 OLED renderer and Bridge state puller.
 - `host/st_smartwatch_stream.c` - earlier direct-streaming prototype kept for reference.
 
 ## Build and run
@@ -32,8 +32,10 @@ After the sketch is installed, launch the App Lab app in the normal way. There i
 
 ## Runtime model
 
-- Python sends `day_seconds`, `steps`, and `battery` every `0.5s`.
-- The sketch derives the active LCARS scene locally and animates the ECG and diagnostics views on the MCU.
+- The sketch calls `Bridge.call("watch_sync")` approximately every `0.5s`.
+- Python's `watch_sync()` RPC returns status integer (1 = success, 0 = failure).
+- Inside `watch_sync()`, Python sends watch state via `Bridge.notify("watch_state", day_seconds, steps, battery)`.
+- The MCU notify handler receives state, derives the active LCARS scene locally, and animates the ECG and diagnostics views.
 - The OLED is updated directly from the sketch over `Wire`.
 
 ## Notes

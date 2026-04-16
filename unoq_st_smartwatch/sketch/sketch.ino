@@ -13,6 +13,7 @@ constexpr uint8_t PAGES = HEIGHT / 8;
 constexpr size_t FRAME_BYTES = WIDTH * PAGES;
 constexpr size_t I2C_CHUNK = 31;
 constexpr unsigned long FRAME_INTERVAL_MS = 33;
+constexpr unsigned long SYNC_INTERVAL_MS = 500;
 
 uint8_t frameBuffer[FRAME_BYTES] = {0};
 
@@ -455,6 +456,30 @@ void watchSync(uint32_t daySeconds, uint32_t steps, uint32_t battery) {
 int watchPing() {
   return 1;
 }
+
+int watchSyncRpc() {
+  return 1;
+}
+
+void watchStateNotify(uint32_t daySeconds, uint32_t steps, uint32_t battery) {
+  watchSync(daySeconds, steps, battery);
+}
+
+void pullWatchSync(unsigned long nowMs) {
+  static unsigned long lastSyncMs = 0;
+  static bool firstSync = true;
+  if (!firstSync && (nowMs - lastSyncMs) < SYNC_INTERVAL_MS) {
+    return;
+  }
+  firstSync = false;
+  lastSyncMs = nowMs;
+
+  int syncOk = 0;
+  const bool callOk = Bridge.call("watch_sync").result(syncOk);
+  if (!callOk) {
+    Monitor.println("watch pull failed");
+  }
+}
 }  // namespace
 
 void setup() {
@@ -469,7 +494,8 @@ void setup() {
 
   Bridge.begin();
   Monitor.begin();
-  Bridge.provide("watch_sync", watchSync);
+  Bridge.provide("watch_sync", watchSyncRpc);
+  Bridge.provide("watch_state", watchStateNotify);
   Bridge.provide("watch_ping", watchPing);
 
   randomSeed(micros());
@@ -483,6 +509,9 @@ void loop() {
   static float ecgPhase = 0.0f;
 
   const unsigned long nowMillis = millis();
+
+  pullWatchSync(nowMillis);
+
   if (nowMillis - lastFrameMillis < FRAME_INTERVAL_MS) {
     delay(1);
     return;
