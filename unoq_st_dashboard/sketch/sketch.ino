@@ -862,12 +862,12 @@ void setup() {
 
   Bridge.begin();
   Monitor.begin();
-  Bridge.provide_safe("dash_begin", dashBegin);
-  Bridge.provide_safe("dash_cores", dashCores);
-  Bridge.provide_safe("dash_memory", dashMemory);
-  Bridge.provide_safe("dash_storage", dashStorage);
-  Bridge.provide_safe("dash_network", dashNetwork);
-  Bridge.provide_safe("dash_commit", dashCommit);
+  Bridge.provide("dash_begin", dashBegin);
+  Bridge.provide("dash_cores", dashCores);
+  Bridge.provide("dash_memory", dashMemory);
+  Bridge.provide("dash_storage", dashStorage);
+  Bridge.provide("dash_network", dashNetwork);
+  Bridge.provide("dash_commit", dashCommit);
   Bridge.provide("dash_ping", dashPing);
 
   randomSeed(micros());

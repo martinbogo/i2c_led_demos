@@ -469,7 +469,7 @@ void setup() {
 
   Bridge.begin();
   Monitor.begin();
-  Bridge.provide_safe("watch_sync", watchSync);
+  Bridge.provide("watch_sync", watchSync);
   Bridge.provide("watch_ping", watchPing);
 
   randomSeed(micros());
