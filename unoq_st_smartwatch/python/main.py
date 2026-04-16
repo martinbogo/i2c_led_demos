@@ -32,6 +32,9 @@ def watch_sync() -> int:
         return 0
 
 
+print("Registering watch_sync RPC handler", flush=True)
 Bridge.provide("watch_sync", watch_sync)
 
+print("Starting App", flush=True)
 App.run()
+print("App running", flush=True)
