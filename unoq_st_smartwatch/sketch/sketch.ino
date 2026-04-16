@@ -461,7 +461,10 @@ int watchSyncRpc() {
   return 1;
 }
 
-void watchStateNotify(uint32_t daySeconds, uint32_t steps, uint32_t battery) {
+void watchStateNotify(String daySeconds_str, String steps_str, String battery_str) {
+  uint32_t daySeconds = daySeconds_str.toInt();
+  uint32_t steps = steps_str.toInt();
+  uint32_t battery = battery_str.toInt();
   watchSync(daySeconds, steps, battery);
 }
 

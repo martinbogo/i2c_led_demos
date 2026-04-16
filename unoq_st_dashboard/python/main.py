@@ -5,6 +5,11 @@ from pathlib import Path
 
 from arduino.app_utils import App, Bridge
 
+original_notify = Bridge.notify
+def notify_str(*args):
+    return original_notify(*[str(a) if isinstance(a, int) else a for a in args])
+Bridge.notify = notify_str
+
 
 MAX_CORES = 4
 THERMAL_LIMIT_C = 85
@@ -468,6 +473,7 @@ def collect_snapshot() -> Snapshot:
 
 
 def send_snapshot(snapshot: Snapshot) -> None:
+    Bridge.notify("dash_test", "10", "hello")
     Bridge.notify(
         "dash_begin",
         snapshot.uptime_minutes,
@@ -476,6 +482,7 @@ def send_snapshot(snapshot: Snapshot) -> None:
         snapshot.fan_value,
         int(snapshot.fan_is_rpm),
     )
+    time.sleep(0.02)
     Bridge.notify(
         "dash_system",
         snapshot.arm_freq_mhz,
@@ -484,6 +491,7 @@ def send_snapshot(snapshot: Snapshot) -> None:
         snapshot.iowait10,
         snapshot.load1x10,
     )
+    time.sleep(0.02)
     Bridge.notify(
         "dash_cores",
         snapshot.core_count,
@@ -492,6 +500,7 @@ def send_snapshot(snapshot: Snapshot) -> None:
         snapshot.per_core10[2],
         snapshot.per_core10[3],
     )
+    time.sleep(0.02)
     Bridge.notify(
         "dash_core_freqs",
         snapshot.core_freq_mhz[0],
@@ -499,6 +508,7 @@ def send_snapshot(snapshot: Snapshot) -> None:
         snapshot.core_freq_mhz[2],
         snapshot.core_freq_mhz[3],
     )
+    time.sleep(0.02)
     Bridge.notify(
         "dash_memory",
         snapshot.mem_used10,
@@ -508,6 +518,7 @@ def send_snapshot(snapshot: Snapshot) -> None:
         snapshot.zram_used_mb,
         snapshot.mem_psi100,
     )
+    time.sleep(0.02)
     Bridge.notify(
         "dash_storage",
         snapshot.root_tag_code,
@@ -518,6 +529,7 @@ def send_snapshot(snapshot: Snapshot) -> None:
         snapshot.throttled_mask,
         snapshot.failed_units,
     )
+    time.sleep(0.02)
     Bridge.notify(
         "dash_network",
         int(snapshot.eth_up),
@@ -528,12 +540,26 @@ def send_snapshot(snapshot: Snapshot) -> None:
         snapshot.net_tx_kbps,
         snapshot.gateway_latency10,
     )
+    time.sleep(0.02)
     Bridge.notify("dash_commit")
 
 
-def dash_sync() -> int:
+import time
+import threading
+
+def _delayed_sync():
+    time.sleep(0.2)
     try:
         send_snapshot(collect_snapshot())
+    except Exception as exc:
+        print(f"dash_sync delayed ERROR: {exc}", flush=True)
+
+def dash_sync() -> int:
+    t0 = time.time()
+    try:
+        threading.Thread(target=_delayed_sync, daemon=True).start()
+        t1 = time.time()
+        print(f"dash_sync returning int took {t1-t0:.3f}s", flush=True)
         return 1
     except Exception as exc:
         print(f"dashboard sync failed: {exc}", flush=True)

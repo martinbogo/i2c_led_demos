@@ -2,6 +2,10 @@ import time
 
 from arduino.app_utils import App, Bridge
 
+original_notify = Bridge.notify
+def notify_str(*args):
+    return original_notify(*[str(a) if isinstance(a, int) else a for a in args])
+Bridge.notify = notify_str
 
 START_MONOTONIC = time.monotonic()
 BASE_STEPS = 5500 + (int(time.time()) % 1000)

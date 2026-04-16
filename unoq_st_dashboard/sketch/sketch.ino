@@ -781,7 +781,20 @@ void drawStatsScene(unsigned long nowMs, int scene) {
   }
 }
 
-void dashBegin(uint32_t uptimeMinutes, uint32_t procs, int32_t tempC, int32_t fanValue, uint32_t fanIsRPM) {
+void dashTest(String o1, String o2) {
+  Monitor.print("dashTest invoked! o1=");
+  Monitor.print(o1);
+  Monitor.print(" o2=");
+  Monitor.println(o2);
+}
+
+void dashBegin(String uptimeMinutes_str, String procs_str, String tempC_str, String fanValue_str, String fanIsRPM_str) {
+  uint32_t uptimeMinutes = uptimeMinutes_str.toInt();
+  uint32_t procs = procs_str.toInt();
+  int32_t tempC = tempC_str.toInt();
+  int32_t fanValue = fanValue_str.toInt();
+  uint32_t fanIsRPM = fanIsRPM_str.toInt();
+  Monitor.println("dashBegin invoked!");
   pendingState = currentState;
   pendingState.uptimeMinutes = static_cast<uint16_t>(uptimeMinutes > 65535U ? 65535U : uptimeMinutes);
   pendingState.procs = static_cast<uint16_t>(procs > 65535U ? 65535U : procs);
@@ -791,7 +804,12 @@ void dashBegin(uint32_t uptimeMinutes, uint32_t procs, int32_t tempC, int32_t fa
   pendingDirty = true;
 }
 
-void dashSystem(uint32_t armFreqMHz, uint32_t armMaxMHz, uint32_t totalCpu10, uint32_t iowait10, uint32_t load1x10) {
+void dashSystem(String armFreqMHz_str, String armMaxMHz_str, String totalCpu10_str, String iowait10_str, String load1x10_str) {
+  uint32_t armFreqMHz = armFreqMHz_str.toInt();
+  uint32_t armMaxMHz = armMaxMHz_str.toInt();
+  uint32_t totalCpu10 = totalCpu10_str.toInt();
+  uint32_t iowait10 = iowait10_str.toInt();
+  uint32_t load1x10 = load1x10_str.toInt();
   pendingState.armFreqMHz = static_cast<int>(armFreqMHz);
   pendingState.armMaxMHz = static_cast<int>(armMaxMHz);
   pendingState.totalCpu10 = static_cast<uint16_t>(totalCpu10 > 1000U ? 1000U : totalCpu10);
@@ -799,7 +817,12 @@ void dashSystem(uint32_t armFreqMHz, uint32_t armMaxMHz, uint32_t totalCpu10, ui
   pendingState.load1x10 = static_cast<uint16_t>(load1x10 > 999U ? 999U : load1x10);
 }
 
-void dashCores(uint32_t coreCount, uint32_t cpu0, uint32_t cpu1, uint32_t cpu2, uint32_t cpu3) {
+void dashCores(String coreCount_str, String cpu0_str, String cpu1_str, String cpu2_str, String cpu3_str) {
+  uint32_t coreCount = coreCount_str.toInt();
+  uint32_t cpu0 = cpu0_str.toInt();
+  uint32_t cpu1 = cpu1_str.toInt();
+  uint32_t cpu2 = cpu2_str.toInt();
+  uint32_t cpu3 = cpu3_str.toInt();
   pendingState.coreCount = static_cast<int>(coreCount > MAX_CORES ? MAX_CORES : coreCount);
   pendingState.perCore10[0] = static_cast<uint16_t>(cpu0 > 1000U ? 1000U : cpu0);
   pendingState.perCore10[1] = static_cast<uint16_t>(cpu1 > 1000U ? 1000U : cpu1);
@@ -807,15 +830,24 @@ void dashCores(uint32_t coreCount, uint32_t cpu0, uint32_t cpu1, uint32_t cpu2, 
   pendingState.perCore10[3] = static_cast<uint16_t>(cpu3 > 1000U ? 1000U : cpu3);
 }
 
-void dashCoreFreqs(uint32_t freq0, uint32_t freq1, uint32_t freq2, uint32_t freq3) {
+void dashCoreFreqs(String freq0_str, String freq1_str, String freq2_str, String freq3_str) {
+  uint32_t freq0 = freq0_str.toInt();
+  uint32_t freq1 = freq1_str.toInt();
+  uint32_t freq2 = freq2_str.toInt();
+  uint32_t freq3 = freq3_str.toInt();
   pendingState.coreFreqMHz[0] = static_cast<uint16_t>(freq0 > 65535U ? 65535U : freq0);
   pendingState.coreFreqMHz[1] = static_cast<uint16_t>(freq1 > 65535U ? 65535U : freq1);
   pendingState.coreFreqMHz[2] = static_cast<uint16_t>(freq2 > 65535U ? 65535U : freq2);
   pendingState.coreFreqMHz[3] = static_cast<uint16_t>(freq3 > 65535U ? 65535U : freq3);
 }
 
-void dashMemory(uint32_t memUsed10, uint32_t memAvailMB, uint32_t memCachedMB,
-                uint32_t swapUsedMB, uint32_t zramUsedMB, uint32_t memPsi100) {
+void dashMemory(String memUsed10_str, String memAvailMB_str, String memCachedMB_str, String swapUsedMB_str, String zramUsedMB_str, String memPsi100_str) {
+  uint32_t memUsed10 = memUsed10_str.toInt();
+  uint32_t memAvailMB = memAvailMB_str.toInt();
+  uint32_t memCachedMB = memCachedMB_str.toInt();
+  uint32_t swapUsedMB = swapUsedMB_str.toInt();
+  uint32_t zramUsedMB = zramUsedMB_str.toInt();
+  uint32_t memPsi100 = memPsi100_str.toInt();
   pendingState.memUsed10 = static_cast<uint16_t>(memUsed10 > 1000U ? 1000U : memUsed10);
   pendingState.memAvailMB = static_cast<uint16_t>(memAvailMB > 65535U ? 65535U : memAvailMB);
   pendingState.memCachedMB = static_cast<uint16_t>(memCachedMB > 65535U ? 65535U : memCachedMB);
@@ -824,8 +856,14 @@ void dashMemory(uint32_t memUsed10, uint32_t memAvailMB, uint32_t memCachedMB,
   pendingState.memPsi100 = static_cast<uint16_t>(memPsi100 > 9999U ? 9999U : memPsi100);
 }
 
-void dashStorage(uint32_t rootTagCode, uint32_t diskUsed10, uint32_t diskReadKBps,
-                 uint32_t diskWriteKBps, int32_t nvmeTempC, uint32_t throttledMask, uint32_t failedUnits) {
+void dashStorage(String rootTagCode_str, String diskUsed10_str, String diskReadKBps_str, String diskWriteKBps_str, String nvmeTempC_str, String throttledMask_str, String failedUnits_str) {
+  uint32_t rootTagCode = rootTagCode_str.toInt();
+  uint32_t diskUsed10 = diskUsed10_str.toInt();
+  uint32_t diskReadKBps = diskReadKBps_str.toInt();
+  uint32_t diskWriteKBps = diskWriteKBps_str.toInt();
+  int32_t nvmeTempC = nvmeTempC_str.toInt();
+  uint32_t throttledMask = throttledMask_str.toInt();
+  uint32_t failedUnits = failedUnits_str.toInt();
   pendingState.rootTagCode = static_cast<uint8_t>(rootTagCode > 3U ? 0U : rootTagCode);
   pendingState.diskUsed10 = static_cast<uint16_t>(diskUsed10 > 1000U ? 1000U : diskUsed10);
   pendingState.diskReadKBps = diskReadKBps;
@@ -835,8 +873,14 @@ void dashStorage(uint32_t rootTagCode, uint32_t diskUsed10, uint32_t diskReadKBp
   pendingState.failedUnits = static_cast<uint16_t>(failedUnits > 65535U ? 65535U : failedUnits);
 }
 
-void dashNetwork(uint32_t ethUp, uint32_t wlanUp, int32_t ethSpeedMbps, int32_t wifiRssiDbm,
-                 uint32_t netRxKBps, uint32_t netTxKBps, int32_t gatewayLatency10) {
+void dashNetwork(String ethUp_str, String wlanUp_str, String ethSpeedMbps_str, String wifiRssiDbm_str, String netRxKBps_str, String netTxKBps_str, String gatewayLatency10_str) {
+  uint32_t ethUp = ethUp_str.toInt();
+  uint32_t wlanUp = wlanUp_str.toInt();
+  int32_t ethSpeedMbps = ethSpeedMbps_str.toInt();
+  int32_t wifiRssiDbm = wifiRssiDbm_str.toInt();
+  uint32_t netRxKBps = netRxKBps_str.toInt();
+  uint32_t netTxKBps = netTxKBps_str.toInt();
+  int32_t gatewayLatency10 = gatewayLatency10_str.toInt();
   pendingState.ethUp = ethUp != 0U;
   pendingState.wlanUp = wlanUp != 0U;
   pendingState.ethSpeedMbps = ethSpeedMbps;
@@ -847,6 +891,7 @@ void dashNetwork(uint32_t ethUp, uint32_t wlanUp, int32_t ethSpeedMbps, int32_t 
 }
 
 void dashCommit() {
+  Monitor.println("dashCommit invoked");
   commitPendingState();
 }
 
@@ -883,6 +928,7 @@ void setup() {
 
   Bridge.begin();
   Monitor.begin();
+  Bridge.provide("dash_test", dashTest);
   Bridge.provide("dash_begin", dashBegin);
   Bridge.provide("dash_system", dashSystem);
   Bridge.provide("dash_cores", dashCores);
