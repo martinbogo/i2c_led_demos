@@ -6,8 +6,8 @@ The dashboard rendering has moved onto the STM32 sketch, which owns the SSD1306 
 
 ## Files
 
-- `python/main.py` - App Lab Python telemetry collector and Bridge notifier.
-- `sketch/sketch.ino` - STM32 OLED dashboard renderer plus staged Bridge handlers.
+- `python/main.py` - App Lab Python telemetry collector and Bridge RPC provider (`dash_sync`).
+- `sketch/sketch.ino` - STM32 OLED dashboard renderer, snapshot pull caller, and staged Bridge handlers.
 - `host/st_dashboard_stream.c` - earlier direct-streaming prototype kept for reference.
 
 ## Build and run
@@ -32,8 +32,8 @@ After the sketch is installed, start the app from Arduino App Lab. There is no n
 
 ## Runtime model
 
-- Python samples Linux telemetry roughly once per second.
-- Each sample is sent as a small staged snapshot using `Bridge.notify(...)` calls.
+- The sketch calls `Bridge.call("dash_sync")` roughly once per second.
+- Python handles `dash_sync`, collects telemetry, and sends a staged snapshot via `Bridge.notify(...)` calls.
 - The sketch commits each snapshot, maintains local history buffers, rotates the LCARS scenes, and redraws the OLED locally.
 
 ## Notes

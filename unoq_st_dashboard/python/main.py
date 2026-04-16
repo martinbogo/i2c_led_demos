@@ -73,7 +73,6 @@ prev_total_cpu: CpuSnap | None = None
 prev_core_cpu: list[CpuSnap | None] = [None] * MAX_CORES
 prev_net: tuple[int, int, float] | None = None
 prev_disk: tuple[int, int, float] | None = None
-primed_bridge = False
 
 
 def read_text(path: str) -> str | None:
@@ -526,35 +525,15 @@ def send_snapshot(snapshot: Snapshot) -> None:
     Bridge.notify("dash_commit")
 
 
-def seed_snapshot() -> Snapshot:
-    snap = Snapshot()
-    snap.uptime_minutes, snap.procs = uptime_minutes_and_procs()
-    snap.temp_c = best_temp_c()
-    snap.fan_value, snap.fan_is_rpm = fan_value()
-    snap.arm_freq_mhz = read_cpu_freq_mhz(0)
-    snap.arm_max_mhz = read_cpu_max_mhz()
-    snap.core_count = 1
-    snap.eth_up = False
-    snap.wlan_up = False
-    return snap
-
-
-def loop() -> None:
-    global primed_bridge
-    if not primed_bridge:
-        try:
-            send_snapshot(seed_snapshot())
-            primed_bridge = True
-        except Exception as exc:
-            print(f"dashboard bridge prime failed: {exc}", flush=True)
-            time.sleep(1.0)
-            return
-
+def dash_sync() -> int:
     try:
         send_snapshot(collect_snapshot())
+        return 1
     except Exception as exc:
         print(f"dashboard sync failed: {exc}", flush=True)
-    time.sleep(1.0)
+        return 0
 
 
-App.run(user_loop=loop)
+Bridge.provide("dash_sync", dash_sync)
+
+App.run()

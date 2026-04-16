@@ -13,6 +13,7 @@ constexpr uint8_t PAGES = HEIGHT / 8;
 constexpr size_t FRAME_BYTES = WIDTH * PAGES;
 constexpr size_t I2C_CHUNK = 31;
 constexpr unsigned long FRAME_INTERVAL_MS = 33;
+constexpr unsigned long SYNC_INTERVAL_MS = 1000;
 constexpr unsigned long ALERT_HOLD_MS = 180000UL;
 constexpr int SCENE_COUNT = 6;
 constexpr int SCENE_SECONDS = 7;
@@ -848,6 +849,22 @@ void dashCommit() {
 int dashPing() {
   return 1;
 }
+
+void pullSnapshot(unsigned long nowMs) {
+  static unsigned long lastSyncMs = 0;
+  static bool firstSync = true;
+  if (!firstSync && (nowMs - lastSyncMs) < SYNC_INTERVAL_MS) {
+    return;
+  }
+  firstSync = false;
+  lastSyncMs = nowMs;
+
+  int32_t syncOk = 0;
+  const bool callOk = Bridge.call("dash_sync").result(syncOk);
+  if (!callOk || syncOk == 0) {
+    Monitor.println("dashboard pull failed");
+  }
+}
 }  // namespace
 
 void setup() {
@@ -877,6 +894,9 @@ void setup() {
 void loop() {
   static unsigned long lastFrameMillis = 0;
   const unsigned long nowMs = millis();
+
+  pullSnapshot(nowMs);
+
   if (nowMs - lastFrameMillis < FRAME_INTERVAL_MS) {
     delay(1);
     return;
