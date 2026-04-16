@@ -1,42 +1,42 @@
 # Uno Q Star Trek smartwatch port
 
-This app ports `st_smartwatch.c` to the Arduino Uno Q by rendering frames on the Linux side and presenting them on the MCU-owned OLED.
+This app now uses the standard Arduino App Lab router path.
+
+The OLED remains MCU-owned on `Wire`, but the rendering is now done locally on the STM32 sketch. The Python side only sends compact watch state updates over Router Bridge, so `arduino-router` stays enabled and App Lab can run the app normally.
 
 ## Files
 
-- `host/st_smartwatch_stream.c` - Linux-side smartwatch renderer and serial frame streamer.
-- `sketch/sketch.ino` - STM32 OLED framebuffer sink.
-- `python/main.py` - minimal App Lab placeholder.
+- `python/main.py` - App Lab Python loop that sends compact watch state updates with `Bridge.notify(...)`.
+- `sketch/sketch.ino` - STM32 OLED renderer plus Bridge handlers.
+- `host/st_smartwatch_stream.c` - earlier direct-streaming prototype kept for reference.
 
-## Build on the Uno Q Linux side
+## Build and run
 
-Compile the host renderer on the board:
+Run the app through Arduino App Lab, or compile and upload the sketch profile with Arduino CLI.
 
-- `gcc -O2 -o st_smartwatch_stream host/st_smartwatch_stream.c -lm`
+The sketch profile pins the Bridge dependency stack used for local CLI builds:
 
-## Run on the Uno Q
+- `Arduino_RouterBridge (0.4.1)`
+- `Arduino_RPClite (0.2.1)`
+- `MsgPack (0.4.2)`
+- `DebugLog (0.8.4)`
+- `ArxContainer (0.7.0)`
+- `ArxTypeTraits (0.3.2)`
 
-1. Upload the sketch.
-2. Stop the standard router so `/dev/ttyHS1` is free.
-3. Assert the MCU-ready GPIO state.
-4. Run the host renderer.
+Typical sketch build flow:
 
-Typical sequence on the board:
+- `arduino-cli compile --profile default sketch`
+- `arduino-cli upload -p <board-ip> --upload-field password=<password> sketch`
 
-- `arduino-cli compile -b arduino:zephyr:unoq -e sketch`
-- `arduino-cli upload -b arduino:zephyr:unoq -p <board-ip> --upload-field password=<password> sketch`
-- `gcc -O2 -o st_smartwatch_stream host/st_smartwatch_stream.c -lm`
-- `sudo systemctl stop arduino-router`
-- `gpioset -c /dev/gpiochip1 -t0 37=0`
-- `gpioset -c /dev/gpiochip1 -t0 70=1`
-- `./st_smartwatch_stream`
+After the sketch is installed, launch the App Lab app in the normal way. There is no need to stop `arduino-router`, claim `/dev/ttyHS1`, or toggle the router GPIO lines.
 
-When finished, restore the router if you want normal App Lab bridge behavior back:
+## Runtime model
 
-- `sudo systemctl start arduino-router`
+- Python sends `day_seconds`, `steps`, and `battery` every `0.5s`.
+- The sketch derives the active LCARS scene locally and animates the ECG and diagnostics views on the MCU.
+- The OLED is updated directly from the sketch over `Wire`.
 
 ## Notes
 
-- The host renderer targets `15 FPS` on the internal link.
-- Timekeeping and animation remain on the Linux side, so the Uno Q displays the same scene logic as the original desktop or Pi-oriented demo.
-- The sketch is a full-screen OLED framebuffer sink that accepts `1024`-byte frames over the internal serial link.
+- The current App Lab-native implementation keeps the LCARS scene layout while replacing the old full-frame streaming transport with compact Bridge state updates.
+- The legacy direct-stream host renderer remains in the folder as a reference implementation of the first porting approach.

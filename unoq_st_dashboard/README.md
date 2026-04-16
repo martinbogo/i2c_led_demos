@@ -1,45 +1,43 @@
 # Uno Q Star Trek dashboard port
 
-This app ports `st_dashboard.c` to the Arduino Uno Q by splitting responsibilities across both processors:
+This app now uses the normal Arduino App Lab router path.
 
-- Linux side: gather telemetry, render the LCARS dashboard, and stream full `128x64` OLED frames.
-- MCU side: own the SSD1306 on `Wire` and present each streamed framebuffer.
+The dashboard rendering has moved onto the STM32 sketch, which owns the SSD1306 OLED on `Wire`. The Python side only gathers compact telemetry snapshots and sends them to the sketch over Router Bridge, so `arduino-router` remains enabled.
 
 ## Files
 
-- `host/st_dashboard_stream.c` - Linux-side dashboard renderer and serial frame streamer.
-- `sketch/sketch.ino` - STM32 OLED framebuffer sink.
-- `python/main.py` - minimal App Lab placeholder.
+- `python/main.py` - App Lab Python telemetry collector and Bridge notifier.
+- `sketch/sketch.ino` - STM32 OLED dashboard renderer plus staged Bridge handlers.
+- `host/st_dashboard_stream.c` - earlier direct-streaming prototype kept for reference.
 
-## Build on the Uno Q Linux side
+## Build and run
 
-Compile the host renderer on the board:
+Run the app normally from Arduino App Lab, or build the sketch profile with Arduino CLI.
 
-- `gcc -O2 -o st_dashboard_stream host/st_dashboard_stream.c -lm`
+The sketch profile pins the Bridge dependency stack used for local CLI builds:
 
-## Run on the Uno Q
+- `Arduino_RouterBridge (0.4.1)`
+- `Arduino_RPClite (0.2.1)`
+- `MsgPack (0.4.2)`
+- `DebugLog (0.8.4)`
+- `ArxContainer (0.7.0)`
+- `ArxTypeTraits (0.3.2)`
 
-1. Upload the sketch.
-2. Stop the standard router so `/dev/ttyHS1` is free.
-3. Assert the MCU-ready GPIO state.
-4. Run the host renderer.
+Typical sketch build flow:
 
-Typical sequence on the board:
+- `arduino-cli compile --profile default sketch`
+- `arduino-cli upload -p <board-ip> --upload-field password=<password> sketch`
 
-- `arduino-cli compile -b arduino:zephyr:unoq -e sketch`
-- `arduino-cli upload -b arduino:zephyr:unoq -p <board-ip> --upload-field password=<password> sketch`
-- `gcc -O2 -o st_dashboard_stream host/st_dashboard_stream.c -lm`
-- `sudo systemctl stop arduino-router`
-- `gpioset -c /dev/gpiochip1 -t0 37=0`
-- `gpioset -c /dev/gpiochip1 -t0 70=1`
-- `./st_dashboard_stream`
+After the sketch is installed, start the app from Arduino App Lab. There is no need to stop `arduino-router`, claim `/dev/ttyHS1`, or toggle the router GPIO lines.
 
-When finished, restore the router if you want normal App Lab bridge behavior back:
+## Runtime model
 
-- `sudo systemctl start arduino-router`
+- Python samples Linux telemetry roughly once per second.
+- Each sample is sent as a small staged snapshot using `Bridge.notify(...)` calls.
+- The sketch commits each snapshot, maintains local history buffers, rotates the LCARS scenes, and redraws the OLED locally.
 
 ## Notes
 
-- The host renderer targets `12 FPS` on the internal link.
-- Telemetry is adapted for generic Linux paths on the Uno Q and does not depend on Raspberry Pi-only commands.
-- The sketch accepts full `1024`-byte framebuffers using the same proven serial transport style as the Uno Q `badapple` port.
+- The App Lab-native version keeps the router active and avoids the earlier full-frame streaming transport entirely.
+- Some telemetry fields are intentionally reduced to compact integer snapshots so the MCU can render the scenes locally without depending on raw framebuffer transport.
+- The legacy direct-stream host renderer remains in the folder as a reference implementation of the first porting approach.
