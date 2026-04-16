@@ -25,6 +25,7 @@ def watch_sync() -> int:
     try:
         day_seconds, steps, battery = current_watch_state()
         Bridge.notify("watch_state", day_seconds, steps, battery)
+        print(f"watch_sync OK: {day_seconds}s, {steps} steps, {battery}% batt", flush=True)
         return 1
     except Exception as exc:
         print(f"watch sync failed: {exc}", flush=True)
