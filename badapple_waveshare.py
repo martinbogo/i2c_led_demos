@@ -10,7 +10,6 @@ import spidev
 import time
 import sys
 import os
-import struct
 
 # GPIO Configuration (BCM pins on gpiochip0)
 LCD_CS_GPIO = 8
@@ -298,10 +297,73 @@ class BadApplePlayer:
         self.video_file = video_file
         self.fps = fps
         self.frame_delay = 1.0 / fps
+        self.frame_format = None
+        self.frame_size = 0
+
+        # Mapping parameters for legacy 128x48 SSD1306-style frames
+        self.src_w = 128
+        self.src_h = 48
+        self.viewport_size = 220  # centered square area inside round panel
+        self.dst_w = 0
+        self.dst_h = 0
+        self.dst_x0 = 0
+        self.dst_y0 = 0
     
     def init(self):
         """Initialize display"""
         self.display.init()
+
+    def _detect_frame_format(self):
+        """Detect frame format from file size."""
+        file_size = os.path.getsize(self.video_file)
+
+        if file_size % 7200 == 0:
+            self.frame_format = "mono240"
+            self.frame_size = 7200
+            return
+
+        if file_size % 768 == 0:
+            self.frame_format = "ssd1306_128x48"
+            self.frame_size = 768
+
+            # Fit 128x48 content into centered square viewport for round display
+            scale = min(self.viewport_size / self.src_w, self.viewport_size / self.src_h)
+            self.dst_w = max(1, int(self.src_w * scale))
+            self.dst_h = max(1, int(self.src_h * scale))
+            self.dst_x0 = (LCD_WIDTH - self.dst_w) // 2
+            self.dst_y0 = (LCD_HEIGHT - self.dst_h) // 2
+            return
+
+        raise ValueError(
+            f"Unsupported video format: {file_size} bytes (expected multiple of 7200 or 768)"
+        )
+
+    def _map_ssd1306_128x48_to_rgb565(self, frame_data):
+        """Map 128x48 SSD1306 page-packed mono frame into 240x240 RGB565 frame."""
+        rgb = bytearray(LCD_WIDTH * LCD_HEIGHT * 2)
+
+        # Fast constants
+        white_hi = 0xFF
+        white_lo = 0xFF
+
+        # Scale + center map
+        for y_out in range(self.dst_h):
+            y_src = (y_out * self.src_h) // self.dst_h
+            page = y_src >> 3
+            bit_mask = 1 << (y_src & 7)
+            y_panel = self.dst_y0 + y_out
+            row_base = y_panel * LCD_WIDTH
+
+            for x_out in range(self.dst_w):
+                x_src = (x_out * self.src_w) // self.dst_w
+                src_byte = frame_data[x_src + page * self.src_w]
+                if src_byte & bit_mask:
+                    x_panel = self.dst_x0 + x_out
+                    idx = (row_base + x_panel) * 2
+                    rgb[idx] = white_hi
+                    rgb[idx + 1] = white_lo
+
+        return rgb
     
     def play(self):
         """Play video from file"""
@@ -315,22 +377,34 @@ class BadApplePlayer:
         
         print(f"Playing video: {self.video_file}")
         print(f"FPS: {self.fps}, Frame delay: {self.frame_delay:.3f}s")
+
+        self._detect_frame_format()
+        print(f"Detected format: {self.frame_format} ({self.frame_size} bytes/frame)")
+        if self.frame_format == "ssd1306_128x48":
+            print(
+                f"Mapping 128x48 -> {self.dst_w}x{self.dst_h} @ ({self.dst_x0},{self.dst_y0}) on 240x240"
+            )
         
         try:
             with open(self.video_file, 'rb') as f:
                 frame_num = 0
                 while True:
-                    # Read frame (240*240 pixels / 8 = 7200 bytes for 1-bit mono)
-                    frame_data = f.read(7200)
+                    frame_data = f.read(self.frame_size)
                     if not frame_data:
                         break
                     
-                    if len(frame_data) < 7200:
+                    if len(frame_data) < self.frame_size:
                         # Pad last frame if needed
-                        frame_data += b'\x00' * (7200 - len(frame_data))
+                        frame_data += b'\x00' * (self.frame_size - len(frame_data))
                     
                     start_time = time.time()
-                    self.display.draw_frame(frame_data)
+
+                    if self.frame_format == "mono240":
+                        self.display.draw_frame(frame_data)
+                    else:
+                        mapped = self._map_ssd1306_128x48_to_rgb565(frame_data)
+                        self.display.draw_frame(mapped)
+
                     elapsed = time.time() - start_time
                     
                     frame_num += 1
@@ -363,7 +437,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Bad Apple player for Waveshare display")
-    parser.add_argument("video", nargs="?", help="Video file to play (1-bit monochrome, 7200 bytes per frame)")
+    parser.add_argument("video", nargs="?", help="Video file to play (auto-detects 240x240 mono or 128x48 SSD1306 packed)")
     parser.add_argument("--fps", type=int, default=30, help="Frames per second (default: 30)")
     parser.add_argument("--test", action="store_true", help="Run display test instead of playing video")
     parser.add_argument("--spi-bus", type=int, default=SPI_BUS, help="SPI bus number (default: 0)")
