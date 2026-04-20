@@ -263,6 +263,20 @@ class DisplayDriver:
         self.set_address_window(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1)
         self._write_command(GC9A01A_RAMWR)
         self._write_data_bytes(rgb565_data)
+
+    def draw_rgb565_region(self, x, y, width, height, rgb565_data):
+        """Draw an RGB565 region at x,y with given width/height."""
+        if width <= 0 or height <= 0:
+            return
+        expected = width * height * 2
+        if len(rgb565_data) != expected:
+            raise ValueError(f"RGB565 region size mismatch: got {len(rgb565_data)}, expected {expected}")
+
+        x2 = x + width - 1
+        y2 = y + height - 1
+        self.set_address_window(x, y, x2, y2)
+        self._write_command(GC9A01A_RAMWR)
+        self._write_data_bytes(rgb565_data)
     
     def cleanup(self):
         """Cleanup resources"""
@@ -339,7 +353,7 @@ class BadApplePlayer:
         )
 
     def _map_ssd1306_128x48_to_rgb565(self, frame_data):
-        """Map 128x48 SSD1306 page-packed mono frame into 240x240 RGB565 frame."""
+        """Map 128x48 SSD1306 page-packed mono frame into viewport RGB565 data."""
         # Panel polarity on this setup:
         # - 0xFFFF appears dark
         # - 0x0000 appears bright
@@ -349,22 +363,20 @@ class BadApplePlayer:
         dark_hi, dark_lo = 0xFF, 0xFF
         bright_hi, bright_lo = 0x00, 0x00
 
-        # Fill entire panel dark so outside the video window is black.
-        rgb = bytearray([dark_hi, dark_lo] * (LCD_WIDTH * LCD_HEIGHT))
+        # Build only viewport payload (outside stays static/dark on panel).
+        rgb = bytearray(self.dst_w * self.dst_h * 2)
 
         # Scale + center map
         for y_out in range(self.dst_h):
             y_src = (y_out * self.src_h) // self.dst_h
             page = y_src >> 3
             bit_mask = 1 << (y_src & 7)
-            y_panel = self.dst_y0 + y_out
-            row_base = y_panel * LCD_WIDTH
+            row_base = y_out * self.dst_w
 
             for x_out in range(self.dst_w):
                 x_src = (x_out * self.src_w) // self.dst_w
                 src_byte = frame_data[x_src + page * self.src_w]
-                x_panel = self.dst_x0 + x_out
-                idx = (row_base + x_panel) * 2
+                idx = (row_base + x_out) * 2
 
                 # Preserve legacy polarity from prior working playback window:
                 # bit set -> dark, bit clear -> bright.
@@ -396,6 +408,8 @@ class BadApplePlayer:
             print(
                 f"Mapping 128x48 -> {self.dst_w}x{self.dst_h} @ ({self.dst_x0},{self.dst_y0}) on 240x240"
             )
+            # Draw dark background once; subsequent frames only update viewport.
+            self.display.draw_frame(bytearray([0xFF, 0xFF] * (LCD_WIDTH * LCD_HEIGHT)))
         
         try:
             with open(self.video_file, 'rb') as f:
@@ -415,7 +429,13 @@ class BadApplePlayer:
                         self.display.draw_frame(frame_data)
                     else:
                         mapped = self._map_ssd1306_128x48_to_rgb565(frame_data)
-                        self.display.draw_frame(mapped)
+                        self.display.draw_rgb565_region(
+                            self.dst_x0,
+                            self.dst_y0,
+                            self.dst_w,
+                            self.dst_h,
+                            mapped,
+                        )
 
                     elapsed = time.time() - start_time
                     
