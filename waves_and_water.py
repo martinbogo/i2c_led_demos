@@ -26,16 +26,16 @@ CONTAINER_RADIUS = SIM_SIZE * 0.5
 CONTAINER_RADIUS_SQ = CONTAINER_RADIUS * CONTAINER_RADIUS
 INNER_RADIUS_SQ = (CONTAINER_RADIUS - 1.5) * (CONTAINER_RADIUS - 1.5)
 
-PARTICLE_COUNT = 220
-PARTICLE_REST_RADIUS = 2.45
+PARTICLE_COUNT = 360
+PARTICLE_REST_RADIUS = 2.35
 PARTICLE_REST_RADIUS_SQ = PARTICLE_REST_RADIUS * PARTICLE_REST_RADIUS
 GRID_CELL_SIZE = 3.3
 GRAVITY_ACCEL = 18.0
 VELOCITY_DAMPING = 0.996
 WALL_BOUNCE = 0.45
-VISCOSITY = 0.015
+VISCOSITY = 0.020
 POSITION_RELAX = 0.42
-SURFACE_TENSION = 0.0015
+SURFACE_TENSION = 0.0022
 TARGET_FPS = 60
 PHYSICS_HZ = 30.0
 DEFAULT_WATER_SPI_SPEED = 80000000
@@ -141,13 +141,13 @@ class WavesAndWaterDemo:
 
     def _spawn_initial_particles(self):
         while len(self.px) < PARTICLE_COUNT:
-            x = random.uniform(self.center - self.radius * 0.82, self.center + self.radius * 0.82)
-            y = random.uniform(self.center - self.radius * 0.15, self.center + self.radius * 0.88)
+            x = random.uniform(self.center - self.radius * 0.90, self.center + self.radius * 0.90)
+            y = random.uniform(self.center - self.radius * 0.72, self.center + self.radius * 0.92)
             dx = x - self.center
             dy = y - self.center
-            if dx * dx + dy * dy > (self.radius * 0.84) * (self.radius * 0.84):
+            if dx * dx + dy * dy > (self.radius * 0.90) * (self.radius * 0.90):
                 continue
-            if y < self.center - 3.5:
+            if y < self.center - self.radius * 0.52:
                 continue
             self.px.append(x)
             self.py.append(y)
@@ -321,16 +321,16 @@ class WavesAndWaterDemo:
                 tile_wave_2 = 0.5 + 0.5 * math.sin((world_x + world_y) * 13.0)
                 tile_mix = clamp(tile_wave * 0.65 + tile_wave_2 * 0.35, 0.0, 1.0)
 
-                base_r = 8 + int(18 * radius_mix)
-                base_g = 34 + int(58 * radius_mix)
-                base_b = 68 + int(96 * radius_mix)
+                base_r = 4 + int(14 * radius_mix)
+                base_g = 28 + int(70 * radius_mix)
+                base_b = 76 + int(124 * radius_mix)
 
-                floor_r = base_r + int(8 * tile_mix)
-                floor_g = base_g + int(14 * tile_mix)
-                floor_b = base_b + int(18 * tile_mix)
+                floor_r = base_r + int(10 * tile_mix)
+                floor_g = base_g + int(22 * tile_mix)
+                floor_b = base_b + int(30 * tile_mix)
 
-                vignette = 0.38 + 0.62 * radius_mix
-                edge_dim = 0.45 + 0.55 * wall_shadow
+                vignette = 0.30 + 0.70 * radius_mix
+                edge_dim = 0.38 + 0.62 * wall_shadow
                 idx = row + sx
 
                 self.base_bg_r[idx] = clamp(int(floor_r * vignette * edge_dim), 0, 255)
@@ -349,6 +349,9 @@ class WavesAndWaterDemo:
         bg_b_map = self.base_bg_b
         phase_shimmer = self.phase_shimmer
         phase_caustic = self.phase_caustic
+        light_x = -0.36
+        light_y = -0.42
+        light_z = 0.83
         t = self.sim_time
         for sy in range(self.grid_h):
             dy = self.dy_values[sy]
@@ -376,11 +379,14 @@ class WavesAndWaterDemo:
                     grad_x = density_r - density_l
                     grad_y = density_d - density_u
                     slope = abs(grad_x) + abs(grad_y)
+                    refract_x = clamp(sx + int(grad_x * 1.4), 0, self.grid_w - 1)
+                    refract_y = clamp(sy + int(grad_y * 1.4), 0, self.grid_h - 1)
+                    refract_idx = refract_y * self.grid_w + refract_x
 
                     gravity_depth = ((dx * self.gravity_x) + (dy * self.gravity_y)) / max(self.radius, 1.0)
                     gravity_depth = 0.5 + gravity_depth * 0.5
-                    waterness = smoothstep(0.03, 0.36, density)
-                    surface_alpha = clamp(0.16 + waterness * 0.46, 0.0, 0.72)
+                    waterness = smoothstep(0.02, 0.55, density)
+                    surface_alpha = clamp(0.24 + waterness * 0.58, 0.0, 0.90)
                     edge_foam = smoothstep(0.08, 0.42, slope) * waterness
                     shimmer = 0.5 + 0.5 * math.sin(t * 2.2 + phase_shimmer[idx])
                     caustic_wave = 0.5 + 0.5 * math.sin(
@@ -388,33 +394,48 @@ class WavesAndWaterDemo:
                     )
                     caustic_strength = (0.22 + 0.78 * caustic_wave) * (0.2 + waterness * 0.8)
 
-                    bg_r = bg_r_map[idx]
-                    bg_g = bg_g_map[idx]
-                    bg_b = bg_b_map[idx]
+                    bg_r = int(bg_r_map[idx] * 0.62 + bg_r_map[refract_idx] * 0.38)
+                    bg_g = int(bg_g_map[idx] * 0.62 + bg_g_map[refract_idx] * 0.38)
+                    bg_b = int(bg_b_map[idx] * 0.62 + bg_b_map[refract_idx] * 0.38)
 
                     if radial_sq > self.inner_radius_sq and waterness < 0.03:
                         r = bg_r
                         g = bg_g
                         b = bg_b
                     else:
-                        deep_mix = clamp(0.20 + gravity_depth * 0.80, 0.0, 1.0)
-                        tint_r = int(6 + 12 * deep_mix)
-                        tint_g = int(88 + 56 * deep_mix)
-                        tint_b = int(150 + 80 * deep_mix)
+                        deep_mix = clamp(0.12 + gravity_depth * 0.68 + waterness * 0.20, 0.0, 1.0)
+                        tint_r = int(3 + 10 * deep_mix)
+                        tint_g = int(78 + 110 * deep_mix)
+                        tint_b = int(138 + 110 * deep_mix)
 
                         caustic_gain = 0.78 + 0.42 * caustic_strength
-                        floor_r = clamp(int(bg_r * (0.94 + 0.06 * shimmer) * caustic_gain), 0, 255)
-                        floor_g = clamp(int(bg_g * (0.98 + 0.10 * shimmer) * caustic_gain), 0, 255)
-                        floor_b = clamp(int(bg_b * (1.02 + 0.12 * shimmer) * caustic_gain), 0, 255)
+                        floor_r = clamp(int(bg_r * (0.90 + 0.10 * shimmer) * caustic_gain), 0, 255)
+                        floor_g = clamp(int(bg_g * (0.94 + 0.16 * shimmer) * caustic_gain), 0, 255)
+                        floor_b = clamp(int(bg_b * (0.98 + 0.22 * shimmer) * caustic_gain), 0, 255)
 
                         r = int(floor_r * (1.0 - surface_alpha) + tint_r * surface_alpha)
                         g = int(floor_g * (1.0 - surface_alpha) + tint_g * surface_alpha)
                         b = int(floor_b * (1.0 - surface_alpha) + tint_b * surface_alpha)
 
-                        caustic_highlight = 40.0 + 105.0 * caustic_strength
+                        caustic_highlight = 24.0 + 136.0 * caustic_strength
                         r = clamp(int(r + caustic_highlight * 0.10), 0, 255)
                         g = clamp(int(g + caustic_highlight * 0.45), 0, 255)
                         b = clamp(int(b + caustic_highlight * 0.72), 0, 255)
+
+                        normal_x = -grad_x * 0.85
+                        normal_y = -grad_y * 0.85
+                        normal_z = 1.0
+                        normal_len = math.sqrt(normal_x * normal_x + normal_y * normal_y + normal_z * normal_z)
+                        inv_len = 1.0 / normal_len if normal_len > 1e-6 else 1.0
+                        normal_x *= inv_len
+                        normal_y *= inv_len
+                        normal_z *= inv_len
+                        spec = normal_x * light_x + normal_y * light_y + normal_z * light_z
+                        spec = clamp(spec, 0.0, 1.0) ** 18
+                        fresnel = clamp(0.16 + slope * 0.95, 0.0, 1.0)
+                        r = clamp(int(r + spec * 80.0 * (0.15 + 0.45 * fresnel)), 0, 255)
+                        g = clamp(int(g + spec * 150.0 * (0.35 + 0.65 * fresnel)), 0, 255)
+                        b = clamp(int(b + spec * 190.0 * (0.50 + 0.75 * fresnel)), 0, 255)
 
                         foam_boost = edge_foam * (42.0 + 68.0 * shimmer)
                         r = clamp(int(r + foam_boost * 0.20), 0, 255)
