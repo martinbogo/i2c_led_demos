@@ -19,7 +19,7 @@ LCD_RST_GPIO = 27
 LCD_BL_GPIO = 18
 
 # SPI Configuration
-SPI_BUS = 10
+SPI_BUS = 0
 SPI_DEVICE = 0
 SPI_SPEED = 10000000  # 10 MHz
 
@@ -40,8 +40,10 @@ LCD_HEIGHT = 240
 class DisplayDriver:
     """GC9A01A Display Driver"""
     
-    def __init__(self, verbose=False, spi_speed_hz=SPI_SPEED, backlight_active_high=True, use_gpio_cs=False):
+    def __init__(self, verbose=False, spi_bus=SPI_BUS, spi_device=SPI_DEVICE, spi_speed_hz=SPI_SPEED, backlight_active_high=True, use_gpio_cs=False):
         self.verbose = verbose
+        self.spi_bus = spi_bus
+        self.spi_device = spi_device
         self.spi_speed_hz = spi_speed_hz
         self.backlight_active_high = backlight_active_high
         self.use_gpio_cs = use_gpio_cs
@@ -49,10 +51,10 @@ class DisplayDriver:
         # Initialize SPI
         self.spi = spidev.SpiDev()
         try:
-            self.spi.open(SPI_BUS, SPI_DEVICE)
+            self.spi.open(self.spi_bus, self.spi_device)
             self.spi.max_speed_hz = self.spi_speed_hz
             self.spi.mode = 0
-            self._log(f"[SPI] Opened /dev/spidev{SPI_BUS}.{SPI_DEVICE} at {self.spi_speed_hz/1e6:.1f}MHz")
+            self._log(f"[SPI] Opened /dev/spidev{self.spi_bus}.{self.spi_device} at {self.spi_speed_hz/1e6:.1f}MHz")
         except Exception as e:
             self._log(f"[ERROR] Failed to open SPI: {e}", force=True)
             raise
@@ -284,9 +286,11 @@ class DisplayDriver:
 class BadApplePlayer:
     """Bad Apple video player for display"""
     
-    def __init__(self, video_file=None, fps=30, spi_speed_hz=SPI_SPEED, backlight_active_high=True, use_gpio_cs=False):
+    def __init__(self, video_file=None, fps=30, spi_bus=SPI_BUS, spi_device=SPI_DEVICE, spi_speed_hz=SPI_SPEED, backlight_active_high=True, use_gpio_cs=False):
         self.display = DisplayDriver(
             verbose=True,
+            spi_bus=spi_bus,
+            spi_device=spi_device,
             spi_speed_hz=spi_speed_hz,
             backlight_active_high=backlight_active_high,
             use_gpio_cs=use_gpio_cs,
@@ -362,6 +366,8 @@ def main():
     parser.add_argument("video", nargs="?", help="Video file to play (1-bit monochrome, 7200 bytes per frame)")
     parser.add_argument("--fps", type=int, default=30, help="Frames per second (default: 30)")
     parser.add_argument("--test", action="store_true", help="Run display test instead of playing video")
+    parser.add_argument("--spi-bus", type=int, default=SPI_BUS, help="SPI bus number (default: 0)")
+    parser.add_argument("--spi-device", type=int, default=SPI_DEVICE, help="SPI device number (default: 0)")
     parser.add_argument("--spi-hz", type=int, default=SPI_SPEED, help="SPI clock in Hz (default: 10000000)")
     parser.add_argument("--bl-active-low", action="store_true", help="Use active-low backlight polarity")
     parser.add_argument("--gpio-cs", action="store_true", help="Drive CS with GPIO instead of SPI hardware CS")
@@ -374,6 +380,8 @@ def main():
             # Test mode
             print("Running display test...")
             player = BadApplePlayer(
+                spi_bus=args.spi_bus,
+                spi_device=args.spi_device,
                 spi_speed_hz=args.spi_hz,
                 backlight_active_high=not args.bl_active_low,
                 use_gpio_cs=args.gpio_cs,
@@ -406,6 +414,8 @@ def main():
             player = BadApplePlayer(
                 args.video,
                 fps=args.fps,
+                spi_bus=args.spi_bus,
+                spi_device=args.spi_device,
                 spi_speed_hz=args.spi_hz,
                 backlight_active_high=not args.bl_active_low,
                 use_gpio_cs=args.gpio_cs,
