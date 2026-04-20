@@ -52,6 +52,16 @@ def smoothstep(edge0, edge1, value):
     return t * t * (3.0 - 2.0 * t)
 
 
+def pack_panel_color(r, g, b):
+    """Pack color for the current panel configuration.
+
+    The GC9A01 init in `badapple_waveshare.py` uses MADCTL=0x08, which means
+    the panel is in BGR mode. Swapping red/blue here keeps the rendered result
+    visually correct without disturbing the rest of the established driver path.
+    """
+    return ((b & 0xF8) << 8) | ((g & 0xFC) << 3) | (r >> 3)
+
+
 class WavesAndWaterDemo:
     def __init__(self, fps=TARGET_FPS, spi_bus=SPI_BUS, spi_device=SPI_DEVICE, spi_speed_hz=SPI_SPEED,
                  backlight_active_high=True, use_gpio_cs=False, verbose=False):
@@ -397,7 +407,7 @@ class WavesAndWaterDemo:
                         g = clamp(int(g + foam_boost * 0.55), 0, 255)
                         b = clamp(int(b + foam_boost * 0.65), 0, 255)
 
-                    color565 = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+                    color565 = pack_panel_color(r, g, b)
                     hi = (color565 >> 8) & 0xFF
                     lo = color565 & 0xFF
 
