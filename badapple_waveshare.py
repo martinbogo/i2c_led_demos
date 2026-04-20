@@ -340,11 +340,11 @@ class BadApplePlayer:
 
     def _map_ssd1306_128x48_to_rgb565(self, frame_data):
         """Map 128x48 SSD1306 page-packed mono frame into 240x240 RGB565 frame."""
-        rgb = bytearray(LCD_WIDTH * LCD_HEIGHT * 2)
-
-        # Fast constants
-        white_hi = 0xFF
-        white_lo = 0xFF
+        # On this panel setup, 0xFFFF appears dark and 0x0000 appears bright.
+        # Use a dark default fill so the area outside the rectangular video window is black.
+        off_hi, off_lo = 0xFF, 0xFF  # dark background
+        on_hi, on_lo = 0x00, 0x00    # bright foreground
+        rgb = bytearray([off_hi, off_lo] * (LCD_WIDTH * LCD_HEIGHT))
 
         # Scale + center map
         for y_out in range(self.dst_h):
@@ -360,8 +360,8 @@ class BadApplePlayer:
                 if src_byte & bit_mask:
                     x_panel = self.dst_x0 + x_out
                     idx = (row_base + x_panel) * 2
-                    rgb[idx] = white_hi
-                    rgb[idx + 1] = white_lo
+                    rgb[idx] = on_hi
+                    rgb[idx + 1] = on_lo
 
         return rgb
     
