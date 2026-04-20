@@ -27,15 +27,15 @@ CONTAINER_RADIUS_SQ = CONTAINER_RADIUS * CONTAINER_RADIUS
 INNER_RADIUS_SQ = (CONTAINER_RADIUS - 1.5) * (CONTAINER_RADIUS - 1.5)
 
 PARTICLE_COUNT = 520
-PARTICLE_REST_RADIUS = 2.15
+PARTICLE_REST_RADIUS = 2.40
 PARTICLE_REST_RADIUS_SQ = PARTICLE_REST_RADIUS * PARTICLE_REST_RADIUS
-GRID_CELL_SIZE = 3.0
-GRAVITY_ACCEL = 22.0
-VELOCITY_DAMPING = 0.9975
-WALL_BOUNCE = 0.62
-VISCOSITY = 0.010
-POSITION_RELAX = 0.36
-SURFACE_TENSION = 0.0032
+GRID_CELL_SIZE = 3.2
+GRAVITY_ACCEL = 19.0
+VELOCITY_DAMPING = 0.9965
+WALL_BOUNCE = 0.52
+VISCOSITY = 0.006
+POSITION_RELAX = 0.56
+SURFACE_TENSION = 0.00035
 TARGET_FPS = 60
 PHYSICS_HZ = 30.0
 DEFAULT_WATER_SPI_SPEED = 80000000
@@ -135,8 +135,9 @@ class WavesAndWaterDemo:
         if not initial:
             delta_gx = self.gravity_target_x - prev_gx
             delta_gy = self.gravity_target_y - prev_gy
-            dir_impulse = 1.9
-            swirl_impulse = 3.2
+            turn_mag = min(1.0, math.hypot(delta_gx, delta_gy))
+            dir_impulse = 0.9 + 0.6 * turn_mag
+            swirl_impulse = 0.55 + 0.35 * turn_mag
             for i in range(len(self.px)):
                 rx = self.px[i] - self.center
                 ry = self.py[i] - self.center
@@ -223,7 +224,7 @@ class WavesAndWaterDemo:
                         nx = dx / dist
                         ny = dy / dist
                         overlap = PARTICLE_REST_RADIUS - dist
-                        push = overlap * POSITION_RELAX
+                        push = overlap * POSITION_RELAX * (0.70 + 0.30 * overlap / PARTICLE_REST_RADIUS)
 
                         self.px[i] -= nx * push
                         self.py[i] -= ny * push
@@ -237,11 +238,13 @@ class WavesAndWaterDemo:
                         self.vx[j] -= rvx * VISCOSITY
                         self.vy[j] -= rvy * VISCOSITY
 
-                        cohesion = overlap * SURFACE_TENSION
-                        self.vx[i] += nx * cohesion
-                        self.vy[i] += ny * cohesion
-                        self.vx[j] -= nx * cohesion
-                        self.vy[j] -= ny * cohesion
+                        # Keep surface cohesion very weak and only near the free surface range.
+                        if dist > PARTICLE_REST_RADIUS * 0.72:
+                            cohesion = (dist - PARTICLE_REST_RADIUS * 0.72) * SURFACE_TENSION
+                            self.vx[i] += nx * cohesion
+                            self.vy[i] += ny * cohesion
+                            self.vx[j] -= nx * cohesion
+                            self.vy[j] -= ny * cohesion
 
         # Circular boundary constraint matching the display's visible region.
         for i in range(particle_count):
