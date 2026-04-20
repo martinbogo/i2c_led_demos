@@ -1,1 +1,0 @@
-oled_grayscale_cal: oled_grayscale_cal.c

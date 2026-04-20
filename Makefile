@@ -24,8 +24,8 @@ endif
 
 SIZE_EXTRA_LDFLAGS = -flto
 
-# Identify all loose C system modules
-SRCS = $(wildcard *.c)
+# Identify all loose C system modules (excluding special targets)
+SRCS = $(filter-out test_lcd_gc9a01.c badapple_waveshare.c, $(wildcard *.c))
 
 # Auto-generate matching target binaries
 BINS = $(SRCS:.c=)
@@ -52,6 +52,26 @@ elevated: LDFLAGS += $(SIZE_LDFLAGS) $(SIZE_EXTRA_LDFLAGS) $(SIZE_ELF_EXTRA_LDFL
 elevated: LDLIBS := -lm
 elevated: $(OLED_LUT_HEADER)
 
+# Waveshare 1.28" OLED Display Test
+test_lcd_gc9a01: hal_gpio_spi.o lcd_gc9a01.o test_lcd_gc9a01.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+hal_gpio_spi.o: hal_gpio_spi.c hal_gpio_spi.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+lcd_gc9a01.o: lcd_gc9a01.c lcd_gc9a01.h gpio_config.h hal_gpio_spi.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+test_lcd_gc9a01.o: test_lcd_gc9a01.c lcd_gc9a01.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# Waveshare Bad Apple Demo
+badapple_waveshare: hal_gpio_spi.o lcd_gc9a01.o badapple_waveshare.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+badapple_waveshare.o: badapple_waveshare.c lcd_gc9a01.h gpio_config.h hal_gpio_spi.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 all: $(BINS)
 
 $(DEP_DIR):
@@ -68,6 +88,6 @@ $(OLED_LUT_HEADER): $(OLED_LUT_GENERATOR) FORCE
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
 clean:
-	rm -rf $(BINS) $(DEP_DIR) $(OLED_LUT_HEADER)
+	rm -rf $(BINS) $(DEP_DIR) $(OLED_LUT_HEADER) *.o test_lcd_gc9a01 badapple_waveshare
 
 -include $(DEPS)
