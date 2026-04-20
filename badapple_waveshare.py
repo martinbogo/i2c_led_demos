@@ -20,7 +20,7 @@ LCD_BL_GPIO = 18
 # SPI Configuration
 SPI_BUS = 0
 SPI_DEVICE = 0
-SPI_SPEED = 10000000  # 10 MHz
+SPI_SPEED = 10000000  # Conservative default; demos can override higher.
 
 # GC9A01A Commands
 GC9A01A_SWRESET = 0x01
@@ -53,6 +53,8 @@ class DisplayDriver:
             self.spi.open(self.spi_bus, self.spi_device)
             self.spi.max_speed_hz = self.spi_speed_hz
             self.spi.mode = 0
+            self._bulk_write = self.spi.writebytes2 if hasattr(self.spi, "writebytes2") else self.spi.writebytes
+            self._bulk_chunk_size = 65536
             self._log(f"[SPI] Opened /dev/spidev{self.spi_bus}.{self.spi_device} at {self.spi_speed_hz/1e6:.1f}MHz")
         except Exception as e:
             self._log(f"[ERROR] Failed to open SPI: {e}", force=True)
@@ -106,12 +108,17 @@ class DisplayDriver:
         if self.use_gpio_cs:
             self._gpio_set(LCD_CS_GPIO, 0)
         
-        # Send data in chunks to avoid kernel buffer limits
-        max_chunk = 4000
-        if isinstance(data, (list, bytes, bytearray)):
-            for i in range(0, len(data), max_chunk):
-                chunk = data[i:i+max_chunk]
-                self.spi.writebytes(chunk)
+        # Use the fastest bulk-write API available. `writebytes2` accepts large
+        # buffer-protocol objects directly and performs much better for full-frame
+        # RGB565 transfers on the Pi than many small `writebytes` calls.
+        if isinstance(data, (bytes, bytearray, memoryview)):
+            for i in range(0, len(data), self._bulk_chunk_size):
+                chunk = data[i:i + self._bulk_chunk_size]
+                self._bulk_write(chunk)
+        elif isinstance(data, list):
+            for i in range(0, len(data), self._bulk_chunk_size):
+                chunk = data[i:i + self._bulk_chunk_size]
+                self._bulk_write(chunk)
         else:
             self.spi.writebytes([data])
         

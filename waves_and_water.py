@@ -17,25 +17,26 @@ import time
 
 from badapple_waveshare import DisplayDriver, LCD_HEIGHT, LCD_WIDTH, SPI_BUS, SPI_DEVICE, SPI_SPEED
 
-SIM_SIZE = 80
+SIM_SIZE = 60
 SCALE = LCD_WIDTH // SIM_SIZE
 CONTAINER_CENTER = (SIM_SIZE - 1) * 0.5
 CONTAINER_RADIUS = CONTAINER_CENTER - 1.75
 CONTAINER_RADIUS_SQ = CONTAINER_RADIUS * CONTAINER_RADIUS
 INNER_RADIUS_SQ = (CONTAINER_RADIUS - 1.5) * (CONTAINER_RADIUS - 1.5)
 
-PARTICLE_COUNT = 560
-PARTICLE_REST_RADIUS = 1.9
+PARTICLE_COUNT = 220
+PARTICLE_REST_RADIUS = 2.45
 PARTICLE_REST_RADIUS_SQ = PARTICLE_REST_RADIUS * PARTICLE_REST_RADIUS
-GRID_CELL_SIZE = 2.5
+GRID_CELL_SIZE = 3.3
 GRAVITY_ACCEL = 18.0
 VELOCITY_DAMPING = 0.996
 WALL_BOUNCE = 0.45
 VISCOSITY = 0.015
 POSITION_RELAX = 0.42
 SURFACE_TENSION = 0.0015
-TARGET_FPS = 18
-PHYSICS_HZ = 60.0
+TARGET_FPS = 60
+PHYSICS_HZ = 30.0
+DEFAULT_WATER_SPI_SPEED = 80000000
 
 BLACK_HI = 0x00
 BLACK_LO = 0x00
@@ -63,7 +64,7 @@ def pack_panel_color(r, g, b):
 
 
 class WavesAndWaterDemo:
-    def __init__(self, fps=TARGET_FPS, spi_bus=SPI_BUS, spi_device=SPI_DEVICE, spi_speed_hz=SPI_SPEED,
+    def __init__(self, fps=TARGET_FPS, spi_bus=SPI_BUS, spi_device=SPI_DEVICE, spi_speed_hz=DEFAULT_WATER_SPI_SPEED,
                  backlight_active_high=True, use_gpio_cs=False, verbose=False):
         self.verbose = verbose
         self.frame_delay = 1.0 / max(1, fps)
@@ -91,6 +92,18 @@ class WavesAndWaterDemo:
         self.density = [0.0] * (self.grid_w * self.grid_h)
         self.blur = [0.0] * (self.grid_w * self.grid_h)
         self.frame = bytearray(LCD_WIDTH * LCD_HEIGHT * 2)
+        self.scaled_row = bytearray(LCD_WIDTH * 2)
+
+        self.dx_values = [x - self.center for x in range(self.grid_w)]
+        self.dy_values = [y - self.center for y in range(self.grid_h)]
+        self.base_x_values = [x * SCALE for x in range(self.grid_w)]
+        self.base_y_values = [y * SCALE for y in range(self.grid_h)]
+        self.row_stride = LCD_WIDTH * 2
+        self.phase_shimmer = [0.22 * x + 0.17 * y for y in range(self.grid_h) for x in range(self.grid_w)]
+        self.phase_caustic = [0.31 * x + 0.37 * y for y in range(self.grid_h) for x in range(self.grid_w)]
+        self.base_bg_r = [0] * (self.grid_w * self.grid_h)
+        self.base_bg_g = [0] * (self.grid_w * self.grid_h)
+        self.base_bg_b = [0] * (self.grid_w * self.grid_h)
 
         self.sim_time = 0.0
         self.gravity_timer = 0.0
@@ -100,6 +113,7 @@ class WavesAndWaterDemo:
         self.gravity_y = 1.0
 
         self._spawn_initial_particles()
+        self._build_pool_background_map()
         self._pick_new_gravity(initial=True)
 
     def _log(self, message):
@@ -115,7 +129,7 @@ class WavesAndWaterDemo:
         # Add a short impulse so the water visibly reacts when gravity changes.
         if not initial:
             impulse = 1.6
-            for i in range(PARTICLE_COUNT):
+            for i in range(len(self.px)):
                 jitter = 0.75 + random.random() * 0.5
                 self.vx[i] += self.gravity_target_x * impulse * jitter
                 self.vy[i] += self.gravity_target_y * impulse * jitter
@@ -147,6 +161,8 @@ class WavesAndWaterDemo:
         if self.gravity_timer <= 0.0:
             self._pick_new_gravity()
 
+        particle_count = len(self.px)
+
         # Smoothly rotate toward the next gravity direction.
         blend = min(1.0, dt * 1.8)
         self.gravity_x += (self.gravity_target_x - self.gravity_x) * blend
@@ -158,7 +174,7 @@ class WavesAndWaterDemo:
 
         dt60 = dt * PHYSICS_HZ
 
-        for i in range(PARTICLE_COUNT):
+        for i in range(particle_count):
             self.vx[i] += self.gravity_x * GRAVITY_ACCEL * dt
             self.vy[i] += self.gravity_y * GRAVITY_ACCEL * dt
             self.vx[i] *= VELOCITY_DAMPING
@@ -169,12 +185,12 @@ class WavesAndWaterDemo:
 
         # Spatial hash for local interactions.
         buckets = {}
-        for i in range(PARTICLE_COUNT):
+        for i in range(particle_count):
             gx = int(self.px[i] / GRID_CELL_SIZE)
             gy = int(self.py[i] / GRID_CELL_SIZE)
             buckets.setdefault((gx, gy), []).append(i)
 
-        for i in range(PARTICLE_COUNT):
+        for i in range(particle_count):
             gx = int(self.px[i] / GRID_CELL_SIZE)
             gy = int(self.py[i] / GRID_CELL_SIZE)
 
@@ -217,7 +233,7 @@ class WavesAndWaterDemo:
                         self.vy[j] -= ny * cohesion
 
         # Circular boundary constraint.
-        for i in range(PARTICLE_COUNT):
+        for i in range(particle_count):
             dx = self.px[i] - self.center
             dy = self.py[i] - self.center
             d2 = dx * dx + dy * dy
@@ -243,7 +259,8 @@ class WavesAndWaterDemo:
             self.density[i] = 0.0
             self.blur[i] = 0.0
 
-        for i in range(PARTICLE_COUNT):
+        particle_count = len(self.px)
+        for i in range(particle_count):
             x = self.px[i]
             y = self.py[i]
             ix = int(x)
@@ -261,7 +278,7 @@ class WavesAndWaterDemo:
                     d2 = dx * dx + dy * dy
                     if d2 > 4.0:
                         continue
-                    weight = 1.0 - d2 * 0.25
+                    weight = (1.0 - d2 * 0.25) * 2.35
                     self.density[sy * self.grid_w + sx] += weight
 
         # Two cheap blur passes for a smoother liquid body.
@@ -288,86 +305,93 @@ class WavesAndWaterDemo:
         y = clamp(y, 0, self.grid_h - 1)
         return self.density[int(y) * self.grid_w + int(x)]
 
-    def _pool_background(self, sx, sy, dx, dy, radial_sq):
-        radius_mix = clamp(1.0 - radial_sq / max(self.radius_sq, 1.0), 0.0, 1.0)
-        wall_shadow = smoothstep(self.radius_sq, self.inner_radius_sq, radial_sq)
+    def _build_pool_background_map(self):
+        for sy in range(self.grid_h):
+            dy = self.dy_values[sy]
+            world_y = dy / self.radius
+            row = sy * self.grid_w
+            for sx in range(self.grid_w):
+                dx = self.dx_values[sx]
+                radial_sq = dx * dx + dy * dy
+                radius_mix = clamp(1.0 - radial_sq / max(self.radius_sq, 1.0), 0.0, 1.0)
+                wall_shadow = smoothstep(self.radius_sq, self.inner_radius_sq, radial_sq)
+                world_x = dx / self.radius
 
-        world_x = (sx - self.center) / self.radius
-        world_y = (sy - self.center) / self.radius
-        t = self.sim_time
+                tile_wave = 0.5 + 0.5 * math.sin(world_x * 11.0)
+                tile_wave *= 0.5 + 0.5 * math.sin(world_y * 10.0)
+                tile_wave_2 = 0.5 + 0.5 * math.sin((world_x + world_y) * 13.0)
+                tile_mix = clamp(tile_wave * 0.65 + tile_wave_2 * 0.35, 0.0, 1.0)
 
-        tile_wave = 0.5 + 0.5 * math.sin(world_x * 11.0 + t * 0.9)
-        tile_wave *= 0.5 + 0.5 * math.sin(world_y * 10.0 - t * 0.7)
-        tile_wave_2 = 0.5 + 0.5 * math.sin((world_x + world_y) * 13.0 - t * 1.1)
-        tile_mix = clamp(tile_wave * 0.65 + tile_wave_2 * 0.35, 0.0, 1.0)
+                base_r = 8 + int(18 * radius_mix)
+                base_g = 34 + int(58 * radius_mix)
+                base_b = 68 + int(96 * radius_mix)
 
-        base_r = 8 + int(18 * radius_mix)
-        base_g = 34 + int(58 * radius_mix)
-        base_b = 68 + int(96 * radius_mix)
+                floor_r = base_r + int(8 * tile_mix)
+                floor_g = base_g + int(14 * tile_mix)
+                floor_b = base_b + int(18 * tile_mix)
 
-        floor_r = base_r + int(8 * tile_mix)
-        floor_g = base_g + int(14 * tile_mix)
-        floor_b = base_b + int(18 * tile_mix)
+                vignette = 0.38 + 0.62 * radius_mix
+                edge_dim = 0.45 + 0.55 * wall_shadow
+                idx = row + sx
 
-        vignette = 0.38 + 0.62 * radius_mix
-        floor_r = int(floor_r * vignette)
-        floor_g = int(floor_g * vignette)
-        floor_b = int(floor_b * vignette)
-
-        edge_dim = 0.45 + 0.55 * wall_shadow
-        return (
-            clamp(int(floor_r * edge_dim), 0, 255),
-            clamp(int(floor_g * edge_dim), 0, 255),
-            clamp(int(floor_b * edge_dim), 0, 255),
-        )
+                self.base_bg_r[idx] = clamp(int(floor_r * vignette * edge_dim), 0, 255)
+                self.base_bg_g[idx] = clamp(int(floor_g * vignette * edge_dim), 0, 255)
+                self.base_bg_b[idx] = clamp(int(floor_b * vignette * edge_dim), 0, 255)
 
     def render_frame(self):
         self._rasterize_density()
 
         frame = self.frame
+        row_buffer = self.scaled_row
+        row_stride = self.row_stride
+        density_map = self.density
+        bg_r_map = self.base_bg_r
+        bg_g_map = self.base_bg_g
+        bg_b_map = self.base_bg_b
+        phase_shimmer = self.phase_shimmer
+        phase_caustic = self.phase_caustic
+        t = self.sim_time
         for sy in range(self.grid_h):
-            dy = sy - self.center
-            base_y = sy * SCALE
+            dy = self.dy_values[sy]
+            base_y = self.base_y_values[sy]
+            density_row = sy * self.grid_w
+            density_up = max(0, sy - 1) * self.grid_w
+            density_dn = min(self.grid_h - 1, sy + 1) * self.grid_w
             for sx in range(self.grid_w):
-                dx = sx - self.center
-                base_x = sx * SCALE
+                dx = self.dx_values[sx]
+                base_x = self.base_x_values[sx]
                 radial_sq = dx * dx + dy * dy
 
                 if radial_sq > self.radius_sq:
                     hi = BLACK_HI
                     lo = BLACK_LO
                 else:
-                    density = self.density[sy * self.grid_w + sx]
-                    density_l = self._sample_density(sx - 1, sy)
-                    density_r = self._sample_density(sx + 1, sy)
-                    density_u = self._sample_density(sx, sy - 1)
-                    density_d = self._sample_density(sx, sy + 1)
+                    idx = density_row + sx
+                    density = density_map[idx]
+                    sx_l = sx - 1 if sx > 0 else 0
+                    sx_r = sx + 1 if sx < self.grid_w - 1 else self.grid_w - 1
+                    density_l = density_map[density_row + sx_l]
+                    density_r = density_map[density_row + sx_r]
+                    density_u = density_map[density_up + sx]
+                    density_d = density_map[density_dn + sx]
                     grad_x = density_r - density_l
                     grad_y = density_d - density_u
-                    slope = math.sqrt(grad_x * grad_x + grad_y * grad_y)
+                    slope = abs(grad_x) + abs(grad_y)
 
                     gravity_depth = ((dx * self.gravity_x) + (dy * self.gravity_y)) / max(self.radius, 1.0)
                     gravity_depth = 0.5 + gravity_depth * 0.5
                     waterness = smoothstep(0.03, 0.36, density)
                     surface_alpha = clamp(0.16 + waterness * 0.46, 0.0, 0.72)
                     edge_foam = smoothstep(0.08, 0.42, slope) * waterness
-                    shimmer = 0.5 + 0.5 * math.sin(self.sim_time * 2.2 + sx * 0.22 + sy * 0.17)
+                    shimmer = 0.5 + 0.5 * math.sin(t * 2.2 + phase_shimmer[idx])
                     caustic_wave = 0.5 + 0.5 * math.sin(
-                        self.sim_time * 4.6
-                        + sx * 0.42
-                        + sy * 0.28
-                        + grad_x * 8.0
-                        - grad_y * 6.5
+                        t * 4.0 + phase_caustic[idx] + grad_x * 7.0 - grad_y * 5.5 + density * 3.5
                     )
-                    caustic_wave *= 0.5 + 0.5 * math.sin(
-                        self.sim_time * 3.1
-                        - sx * 0.19
-                        + sy * 0.33
-                        + density * 4.0
-                    )
-                    caustic_strength = (0.18 + 0.82 * caustic_wave) * (0.2 + waterness * 0.8)
+                    caustic_strength = (0.22 + 0.78 * caustic_wave) * (0.2 + waterness * 0.8)
 
-                    bg_r, bg_g, bg_b = self._pool_background(sx, sy, dx, dy, radial_sq)
+                    bg_r = bg_r_map[idx]
+                    bg_g = bg_g_map[idx]
+                    bg_b = bg_b_map[idx]
 
                     if radial_sq > self.inner_radius_sq and waterness < 0.03:
                         r = bg_r
@@ -379,19 +403,10 @@ class WavesAndWaterDemo:
                         tint_g = int(88 + 56 * deep_mix)
                         tint_b = int(150 + 80 * deep_mix)
 
-                        refract_shift_x = grad_x * 18.0 + math.sin(self.sim_time * 2.7 + sy * 0.18) * 0.6
-                        refract_shift_y = grad_y * 18.0 + math.cos(self.sim_time * 2.3 + sx * 0.16) * 0.6
-                        refract_r, refract_g, refract_b = self._pool_background(
-                            sx + refract_shift_x,
-                            sy + refract_shift_y,
-                            dx,
-                            dy,
-                            radial_sq,
-                        )
-
-                        floor_r = int(bg_r * (1.0 - caustic_strength * 0.25) + refract_r * (0.88 + caustic_strength * 0.12))
-                        floor_g = int(bg_g * (1.0 - caustic_strength * 0.20) + refract_g * (0.90 + caustic_strength * 0.10))
-                        floor_b = int(bg_b * (1.0 - caustic_strength * 0.16) + refract_b * (0.92 + caustic_strength * 0.08))
+                        caustic_gain = 0.78 + 0.42 * caustic_strength
+                        floor_r = clamp(int(bg_r * (0.94 + 0.06 * shimmer) * caustic_gain), 0, 255)
+                        floor_g = clamp(int(bg_g * (0.98 + 0.10 * shimmer) * caustic_gain), 0, 255)
+                        floor_b = clamp(int(bg_b * (1.02 + 0.12 * shimmer) * caustic_gain), 0, 255)
 
                         r = int(floor_r * (1.0 - surface_alpha) + tint_r * surface_alpha)
                         g = int(floor_g * (1.0 - surface_alpha) + tint_g * surface_alpha)
@@ -411,12 +426,16 @@ class WavesAndWaterDemo:
                     hi = (color565 >> 8) & 0xFF
                     lo = color565 & 0xFF
 
-                for oy in range(SCALE):
-                    row_write = (((base_y + oy) * LCD_WIDTH) + base_x) * 2
-                    for _ in range(SCALE):
-                        frame[row_write] = hi
-                        frame[row_write + 1] = lo
-                        row_write += 2
+                px_write = base_x
+                for _ in range(SCALE):
+                    row_buffer[px_write] = hi
+                    row_buffer[px_write + 1] = lo
+                    px_write += 2
+
+            row_start = base_y * row_stride
+            for oy in range(SCALE):
+                dst = row_start + oy * row_stride
+                frame[dst:dst + row_stride] = row_buffer
 
         return frame
 
@@ -428,6 +447,11 @@ class WavesAndWaterDemo:
         last_time = time.monotonic()
         next_frame = last_time
         physics_dt = 1.0 / PHYSICS_HZ
+        stats_frames = 0
+        stats_window_start = last_time
+        step_accum = 0.0
+        render_accum = 0.0
+        draw_accum = 0.0
 
         try:
             while True:
@@ -437,15 +461,37 @@ class WavesAndWaterDemo:
                 accumulator += dt
 
                 while accumulator >= physics_dt:
+                    step_start = time.perf_counter()
                     self.step(physics_dt)
+                    step_accum += time.perf_counter() - step_start
                     accumulator -= physics_dt
 
+                render_start = time.perf_counter()
                 frame = self.render_frame()
-                self.display.draw_frame(frame)
-                frame_counter += 1
+                render_accum += time.perf_counter() - render_start
 
-                if self.verbose and frame_counter % 30 == 0:
-                    print(f"[SIM] Frame {frame_counter}")
+                draw_start = time.perf_counter()
+                self.display.draw_frame(frame)
+                draw_accum += time.perf_counter() - draw_start
+                frame_counter += 1
+                stats_frames += 1
+
+                if self.verbose and stats_frames >= 60:
+                    stats_elapsed = time.monotonic() - stats_window_start
+                    if stats_elapsed > 0:
+                        actual_fps = stats_frames / stats_elapsed
+                        step_ms = (step_accum / stats_frames) * 1000.0
+                        render_ms = (render_accum / stats_frames) * 1000.0
+                        draw_ms = (draw_accum / stats_frames) * 1000.0
+                        print(
+                            f"[SIM] Frame {frame_counter} | {actual_fps:.1f} fps | "
+                            f"step {step_ms:.1f} ms | render {render_ms:.1f} ms | push {draw_ms:.1f} ms"
+                        )
+                    stats_frames = 0
+                    stats_window_start = time.monotonic()
+                    step_accum = 0.0
+                    render_accum = 0.0
+                    draw_accum = 0.0
 
                 next_frame += self.frame_delay
                 sleep_time = next_frame - time.monotonic()
@@ -462,10 +508,10 @@ class WavesAndWaterDemo:
 
 def main():
     parser = argparse.ArgumentParser(description="Full-color waves and water demo for the Waveshare round display")
-    parser.add_argument("--fps", type=int, default=TARGET_FPS, help="Display FPS target (default: 18)")
+    parser.add_argument("--fps", type=int, default=TARGET_FPS, help="Display FPS target (default: 60)")
     parser.add_argument("--spi-bus", type=int, default=SPI_BUS, help="SPI bus number (default: 0)")
     parser.add_argument("--spi-device", type=int, default=SPI_DEVICE, help="SPI device number (default: 0)")
-    parser.add_argument("--spi-hz", type=int, default=SPI_SPEED, help="SPI clock in Hz (default: 10000000)")
+    parser.add_argument("--spi-hz", type=int, default=DEFAULT_WATER_SPI_SPEED, help="SPI clock in Hz (default: 80000000)")
     parser.add_argument("--bl-active-low", action="store_true", help="Use active-low backlight polarity")
     parser.add_argument("--gpio-cs", action="store_true", help="Drive CS with GPIO instead of SPI hardware CS")
     parser.add_argument("--verbose", action="store_true", help="Print gravity changes and frame counters")
