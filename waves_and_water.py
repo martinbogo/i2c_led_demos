@@ -27,15 +27,18 @@ CONTAINER_RADIUS_SQ = CONTAINER_RADIUS * CONTAINER_RADIUS
 INNER_RADIUS_SQ = (CONTAINER_RADIUS - 1.5) * (CONTAINER_RADIUS - 1.5)
 
 PARTICLE_COUNT = 520
-PARTICLE_REST_RADIUS = 2.40
+PARTICLE_REST_RADIUS = 2.25
 PARTICLE_REST_RADIUS_SQ = PARTICLE_REST_RADIUS * PARTICLE_REST_RADIUS
-GRID_CELL_SIZE = 3.2
+GRID_CELL_SIZE = 3.4
 GRAVITY_ACCEL = 19.0
 VELOCITY_DAMPING = 0.9965
 WALL_BOUNCE = 0.52
 VISCOSITY = 0.006
 POSITION_RELAX = 0.56
 SURFACE_TENSION = 0.00035
+INTERACTION_RADIUS = PARTICLE_REST_RADIUS * 1.75
+INTERACTION_RADIUS_SQ = INTERACTION_RADIUS * INTERACTION_RADIUS
+PRESSURE_PUSH = 0.080
 TARGET_FPS = 60
 PHYSICS_HZ = 30.0
 DEFAULT_WATER_SPI_SPEED = 80000000
@@ -217,14 +220,21 @@ class WavesAndWaterDemo:
                         dx = self.px[j] - self.px[i]
                         dy = self.py[j] - self.py[i]
                         d2 = dx * dx + dy * dy
-                        if d2 <= 1e-8 or d2 >= PARTICLE_REST_RADIUS_SQ:
+                        if d2 <= 1e-8 or d2 >= INTERACTION_RADIUS_SQ:
                             continue
 
                         dist = math.sqrt(d2)
                         nx = dx / dist
                         ny = dy / dist
-                        overlap = PARTICLE_REST_RADIUS - dist
-                        push = overlap * POSITION_RELAX * (0.70 + 0.30 * overlap / PARTICLE_REST_RADIUS)
+
+                        # Incompressibility + medium-range pressure repulsion.
+                        # This prevents water from collapsing into a tight blob.
+                        q = 1.0 - (dist / INTERACTION_RADIUS)
+                        push = q * q * PRESSURE_PUSH
+                        if dist < PARTICLE_REST_RADIUS:
+                            overlap = PARTICLE_REST_RADIUS - dist
+                            push += overlap * POSITION_RELAX * (0.75 + 0.25 * overlap / PARTICLE_REST_RADIUS)
+                        push = min(push, 0.60)
 
                         self.px[i] -= nx * push
                         self.py[i] -= ny * push
@@ -237,14 +247,6 @@ class WavesAndWaterDemo:
                         self.vy[i] += rvy * VISCOSITY
                         self.vx[j] -= rvx * VISCOSITY
                         self.vy[j] -= rvy * VISCOSITY
-
-                        # Keep surface cohesion very weak and only near the free surface range.
-                        if dist > PARTICLE_REST_RADIUS * 0.72:
-                            cohesion = (dist - PARTICLE_REST_RADIUS * 0.72) * SURFACE_TENSION
-                            self.vx[i] += nx * cohesion
-                            self.vy[i] += ny * cohesion
-                            self.vx[j] -= nx * cohesion
-                            self.vy[j] -= ny * cohesion
 
         # Circular boundary constraint matching the display's visible region.
         for i in range(particle_count):
