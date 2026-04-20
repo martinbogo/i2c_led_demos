@@ -20,7 +20,7 @@ from badapple_waveshare import DisplayDriver, LCD_HEIGHT, LCD_WIDTH, SPI_BUS, SP
 SIM_SIZE = 60
 SCALE = LCD_WIDTH // SIM_SIZE
 CONTAINER_CENTER = (SIM_SIZE - 1) * 0.5
-CONTAINER_RADIUS = CONTAINER_CENTER - 1.75
+CONTAINER_RADIUS = CONTAINER_CENTER - 0.35
 CONTAINER_RADIUS_SQ = CONTAINER_RADIUS * CONTAINER_RADIUS
 INNER_RADIUS_SQ = (CONTAINER_RADIUS - 1.5) * (CONTAINER_RADIUS - 1.5)
 
@@ -363,8 +363,13 @@ class WavesAndWaterDemo:
                 radial_sq = dx * dx + dy * dy
 
                 if radial_sq > self.radius_sq:
-                    hi = BLACK_HI
-                    lo = BLACK_LO
+                    idx = density_row + sx
+                    bg_r = self.base_bg_r[idx]
+                    bg_g = self.base_bg_g[idx]
+                    bg_b = self.base_bg_b[idx]
+                    color565 = pack_panel_color(bg_r, bg_g, bg_b)
+                    hi = (color565 >> 8) & 0xFF
+                    lo = color565 & 0xFF
                 else:
                     idx = density_row + sx
                     density = density_map[idx]
