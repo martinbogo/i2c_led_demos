@@ -40,16 +40,18 @@ LCD_HEIGHT = 240
 class DisplayDriver:
     """GC9A01A Display Driver"""
     
-    def __init__(self, verbose=False):
+    def __init__(self, verbose=False, spi_speed_hz=SPI_SPEED, backlight_active_high=True):
         self.verbose = verbose
+        self.spi_speed_hz = spi_speed_hz
+        self.backlight_active_high = backlight_active_high
         
         # Initialize SPI
         self.spi = spidev.SpiDev()
         try:
             self.spi.open(SPI_BUS, SPI_DEVICE)
-            self.spi.max_speed_hz = SPI_SPEED
+            self.spi.max_speed_hz = self.spi_speed_hz
             self.spi.mode = 0
-            self._log(f"[SPI] Opened /dev/spidev{SPI_BUS}.{SPI_DEVICE} at {SPI_SPEED/1e6:.1f}MHz")
+            self._log(f"[SPI] Opened /dev/spidev{SPI_BUS}.{SPI_DEVICE} at {self.spi_speed_hz/1e6:.1f}MHz")
         except Exception as e:
             self._log(f"[ERROR] Failed to open SPI: {e}", force=True)
             raise
@@ -76,6 +78,11 @@ class DisplayDriver:
         """Set GPIO pin value"""
         val = Value.ACTIVE if value else Value.INACTIVE
         self.lines.set_value(pin, val)
+
+    def _set_backlight(self, enabled):
+        """Set backlight considering active-high/active-low polarity."""
+        level = enabled if self.backlight_active_high else (not enabled)
+        self._gpio_set(LCD_BL_GPIO, 1 if level else 0)
     
     def _write_command(self, cmd):
         """Write command byte (DC=0)"""
@@ -106,6 +113,60 @@ class DisplayDriver:
         self._write_command(cmd)
         if data:
             self._write_data_bytes(data)
+
+    def _run_waveshare_init_sequence(self):
+        """Apply a fuller GC9A01A init sequence used by Waveshare-style demos."""
+        init_cmds = [
+            (0xEF, None),
+            (0xEB, [0x14]),
+            (0xFE, None),
+            (0xEF, None),
+            (0xEB, [0x14]),
+            (0x84, [0x40]),
+            (0x85, [0xFF]),
+            (0x86, [0xFF]),
+            (0x87, [0xFF]),
+            (0x88, [0x0A]),
+            (0x89, [0x21]),
+            (0x8A, [0x00]),
+            (0x8B, [0x80]),
+            (0x8C, [0x01]),
+            (0x8D, [0x01]),
+            (0x8E, [0xFF]),
+            (0x8F, [0xFF]),
+            (0xB6, [0x00, 0x00]),
+            (GC9A01A_MADCTL, [0x08]),
+            (GC9A01A_COLMOD, [0x05]),
+            (0x90, [0x08, 0x08, 0x08, 0x08]),
+            (0xBD, [0x06]),
+            (0xBC, [0x00]),
+            (0xFF, [0x60, 0x01, 0x04]),
+            (0xC3, [0x13]),
+            (0xC4, [0x13]),
+            (0xC9, [0x22]),
+            (0xBE, [0x11]),
+            (0xE1, [0x10, 0x0E]),
+            (0xDF, [0x21, 0x0C, 0x02]),
+            (0xF0, [0x45, 0x09, 0x08, 0x08, 0x26, 0x2A]),
+            (0xF1, [0x43, 0x70, 0x72, 0x36, 0x37, 0x6F]),
+            (0xF2, [0x45, 0x09, 0x08, 0x08, 0x26, 0x2A]),
+            (0xF3, [0x43, 0x70, 0x72, 0x36, 0x37, 0x6F]),
+            (0xED, [0x1B, 0x0B]),
+            (0xAE, [0x77]),
+            (0xCD, [0x63]),
+            (0x70, [0x07, 0x07, 0x04, 0x0E, 0x0F, 0x09, 0x07, 0x08, 0x03]),
+            (0xE8, [0x34]),
+            (0x62, [0x18, 0x0D, 0x71, 0xED, 0x70, 0x70, 0x18, 0x0F, 0x71, 0xEF, 0x70, 0x70]),
+            (0x63, [0x18, 0x11, 0x71, 0xF1, 0x70, 0x70, 0x18, 0x13, 0x71, 0xF3, 0x70, 0x70]),
+            (0x64, [0x28, 0x29, 0xF1, 0x01, 0xF1, 0x00, 0x07]),
+            (0x66, [0x3C, 0x00, 0xCD, 0x67, 0x45, 0x45, 0x10, 0x00, 0x00, 0x00]),
+            (0x67, [0x00, 0x3C, 0x00, 0x00, 0x00, 0x01, 0x54, 0x10, 0x32, 0x98]),
+            (0x74, [0x10, 0x85, 0x80, 0x00, 0x00, 0x4E, 0x00]),
+            (0x98, [0x3E, 0x07]),
+        ]
+
+        for cmd, data in init_cmds:
+            self._write_cmd_data(cmd, data)
     
     def init(self):
         """Initialize the display"""
@@ -114,7 +175,7 @@ class DisplayDriver:
         # Set GPIO defaults
         self._gpio_set(LCD_CS_GPIO, 1)
         self._gpio_set(LCD_DC_GPIO, 0)
-        self._gpio_set(LCD_BL_GPIO, 0)
+        self._set_backlight(False)
         
         # Hardware reset
         self._log("[LCD] Hardware reset...")
@@ -129,23 +190,17 @@ class DisplayDriver:
         
         # Sleep out
         self._write_command(GC9A01A_SLPOUT)
-        time.sleep(0.01)
+        time.sleep(0.12)
         
-        # Color mode - RGB565
-        self._write_cmd_data(GC9A01A_COLMOD, [0x05])
-        
-        # Memory access control
-        self._write_cmd_data(GC9A01A_MADCTL, [0x00])
-        
-        # Inversion off
-        self._write_command(GC9A01A_INVOFF)
+        # Apply fuller panel setup for Waveshare GC9A01 module variants
+        self._run_waveshare_init_sequence()
         
         # Display on
         self._write_command(GC9A01A_DISPON)
-        time.sleep(0.01)
+        time.sleep(0.02)
         
         # Backlight on
-        self._gpio_set(LCD_BL_GPIO, 1)
+        self._set_backlight(True)
         time.sleep(0.1)
         
         self._log("[LCD] Display initialized")
@@ -219,8 +274,12 @@ class DisplayDriver:
 class BadApplePlayer:
     """Bad Apple video player for display"""
     
-    def __init__(self, video_file=None, fps=30):
-        self.display = DisplayDriver(verbose=True)
+    def __init__(self, video_file=None, fps=30, spi_speed_hz=SPI_SPEED, backlight_active_high=True):
+        self.display = DisplayDriver(
+            verbose=True,
+            spi_speed_hz=spi_speed_hz,
+            backlight_active_high=backlight_active_high,
+        )
         self.video_file = video_file
         self.fps = fps
         self.frame_delay = 1.0 / fps
@@ -292,6 +351,8 @@ def main():
     parser.add_argument("video", nargs="?", help="Video file to play (1-bit monochrome, 7200 bytes per frame)")
     parser.add_argument("--fps", type=int, default=30, help="Frames per second (default: 30)")
     parser.add_argument("--test", action="store_true", help="Run display test instead of playing video")
+    parser.add_argument("--spi-hz", type=int, default=SPI_SPEED, help="SPI clock in Hz (default: 10000000)")
+    parser.add_argument("--bl-active-low", action="store_true", help="Use active-low backlight polarity")
     
     args = parser.parse_args()
     
@@ -300,7 +361,10 @@ def main():
         if args.test:
             # Test mode
             print("Running display test...")
-            player = BadApplePlayer()
+            player = BadApplePlayer(
+                spi_speed_hz=args.spi_hz,
+                backlight_active_high=not args.bl_active_low,
+            )
             player.init()
             
             print("\n=== Display Test ===")
@@ -310,9 +374,9 @@ def main():
             colors = [0x0000, 0xF800, 0x07E0, 0x001F, 0xFFFF]  # BLACK, RED, GREEN, BLUE, WHITE
             for i, color in enumerate(colors):
                 print(f"  Color {i+1}/5...", end="", flush=True)
-                frame = bytearray(7200)
-                for byte_idx in range(7200):
-                    frame[byte_idx] = 0xFF if color else 0x00
+                color_hi = (color >> 8) & 0xFF
+                color_lo = color & 0xFF
+                frame = bytearray([color_hi, color_lo] * (LCD_WIDTH * LCD_HEIGHT))
                 player.display.draw_frame(frame)
                 time.sleep(1)
                 print(" OK")
@@ -326,7 +390,12 @@ def main():
                 print("\nExample: python3 badapple_waveshare.py badapple.bin --fps 30")
                 return 1
             
-            player = BadApplePlayer(args.video, fps=args.fps)
+            player = BadApplePlayer(
+                args.video,
+                fps=args.fps,
+                spi_speed_hz=args.spi_hz,
+                backlight_active_high=not args.bl_active_low,
+            )
             player.init()
             player.play()
         
