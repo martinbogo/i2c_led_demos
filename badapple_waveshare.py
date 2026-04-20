@@ -340,11 +340,17 @@ class BadApplePlayer:
 
     def _map_ssd1306_128x48_to_rgb565(self, frame_data):
         """Map 128x48 SSD1306 page-packed mono frame into 240x240 RGB565 frame."""
-        # On this panel setup, 0xFFFF appears dark and 0x0000 appears bright.
-        # Use a dark default fill so the area outside the rectangular video window is black.
-        off_hi, off_lo = 0xFF, 0xFF  # dark background
-        on_hi, on_lo = 0x00, 0x00    # bright foreground
-        rgb = bytearray([off_hi, off_lo] * (LCD_WIDTH * LCD_HEIGHT))
+        # Panel polarity on this setup:
+        # - 0xFFFF appears dark
+        # - 0x0000 appears bright
+        #
+        # Keep the original video polarity (as previously rendered) while forcing
+        # all non-video pixels to black (dark).
+        dark_hi, dark_lo = 0xFF, 0xFF
+        bright_hi, bright_lo = 0x00, 0x00
+
+        # Fill entire panel dark so outside the video window is black.
+        rgb = bytearray([dark_hi, dark_lo] * (LCD_WIDTH * LCD_HEIGHT))
 
         # Scale + center map
         for y_out in range(self.dst_h):
@@ -357,11 +363,17 @@ class BadApplePlayer:
             for x_out in range(self.dst_w):
                 x_src = (x_out * self.src_w) // self.dst_w
                 src_byte = frame_data[x_src + page * self.src_w]
+                x_panel = self.dst_x0 + x_out
+                idx = (row_base + x_panel) * 2
+
+                # Preserve legacy polarity from prior working playback window:
+                # bit set -> dark, bit clear -> bright.
                 if src_byte & bit_mask:
-                    x_panel = self.dst_x0 + x_out
-                    idx = (row_base + x_panel) * 2
-                    rgb[idx] = on_hi
-                    rgb[idx + 1] = on_lo
+                    rgb[idx] = dark_hi
+                    rgb[idx + 1] = dark_lo
+                else:
+                    rgb[idx] = bright_hi
+                    rgb[idx + 1] = bright_lo
 
         return rgb
     
