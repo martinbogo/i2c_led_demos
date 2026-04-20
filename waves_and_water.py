@@ -26,16 +26,16 @@ CONTAINER_RADIUS = SIM_SIZE * 0.5
 CONTAINER_RADIUS_SQ = CONTAINER_RADIUS * CONTAINER_RADIUS
 INNER_RADIUS_SQ = (CONTAINER_RADIUS - 1.5) * (CONTAINER_RADIUS - 1.5)
 
-PARTICLE_COUNT = 360
-PARTICLE_REST_RADIUS = 2.35
+PARTICLE_COUNT = 520
+PARTICLE_REST_RADIUS = 2.15
 PARTICLE_REST_RADIUS_SQ = PARTICLE_REST_RADIUS * PARTICLE_REST_RADIUS
-GRID_CELL_SIZE = 3.3
-GRAVITY_ACCEL = 18.0
-VELOCITY_DAMPING = 0.996
-WALL_BOUNCE = 0.45
-VISCOSITY = 0.020
-POSITION_RELAX = 0.42
-SURFACE_TENSION = 0.0022
+GRID_CELL_SIZE = 3.0
+GRAVITY_ACCEL = 22.0
+VELOCITY_DAMPING = 0.9975
+WALL_BOUNCE = 0.62
+VISCOSITY = 0.010
+POSITION_RELAX = 0.36
+SURFACE_TENSION = 0.0032
 TARGET_FPS = 60
 PHYSICS_HZ = 30.0
 DEFAULT_WATER_SPI_SPEED = 80000000
@@ -125,34 +125,42 @@ class WavesAndWaterDemo:
 
     def _pick_new_gravity(self, initial=False):
         angle = random.random() * math.tau
+        prev_gx = self.gravity_target_x
+        prev_gy = self.gravity_target_y
         self.gravity_target_x = math.cos(angle)
         self.gravity_target_y = math.sin(angle)
         self.gravity_timer = random.uniform(2.0, 15.0)
 
-        # Add a short impulse so the water visibly reacts when gravity changes.
+        # Add a coherent impulse so the fluid sloshes as a body, not as random spray.
         if not initial:
-            impulse = 1.6
+            delta_gx = self.gravity_target_x - prev_gx
+            delta_gy = self.gravity_target_y - prev_gy
+            dir_impulse = 1.9
+            swirl_impulse = 3.2
             for i in range(len(self.px)):
-                jitter = 0.75 + random.random() * 0.5
-                self.vx[i] += self.gravity_target_x * impulse * jitter
-                self.vy[i] += self.gravity_target_y * impulse * jitter
+                rx = self.px[i] - self.center
+                ry = self.py[i] - self.center
+                lateral = (-delta_gy * rx + delta_gx * ry) / max(self.radius, 1.0)
+                self.vx[i] += self.gravity_target_x * dir_impulse - self.gravity_target_y * swirl_impulse * lateral
+                self.vy[i] += self.gravity_target_y * dir_impulse + self.gravity_target_x * swirl_impulse * lateral
 
         self._log(f"[SIM] Gravity -> {math.degrees(angle):.1f} deg for {self.gravity_timer:.1f}s")
 
     def _spawn_initial_particles(self):
         while len(self.px) < PARTICLE_COUNT:
-            x = random.uniform(self.center - self.radius * 0.90, self.center + self.radius * 0.90)
-            y = random.uniform(self.center - self.radius * 0.72, self.center + self.radius * 0.92)
+            x = random.uniform(self.center - self.radius * 0.97, self.center + self.radius * 0.97)
+            # About one-third fill: spawn in lower segment of the circle.
+            y = random.uniform(self.center + self.radius * 0.22, self.center + self.radius * 0.98)
             dx = x - self.center
             dy = y - self.center
-            if dx * dx + dy * dy > (self.radius * 0.90) * (self.radius * 0.90):
+            if dx * dx + dy * dy > (self.radius * 0.97) * (self.radius * 0.97):
                 continue
-            if y < self.center - self.radius * 0.52:
+            if y < self.center + self.radius * 0.20:
                 continue
             self.px.append(x)
             self.py.append(y)
-            self.vx.append((random.random() - 0.5) * 0.4)
-            self.vy.append((random.random() - 0.5) * 0.4)
+            self.vx.append((random.random() - 0.5) * 0.24)
+            self.vy.append((random.random() - 0.5) * 0.20)
 
     def init(self):
         self.display.init()
@@ -385,12 +393,15 @@ class WavesAndWaterDemo:
 
                     gravity_depth = ((dx * self.gravity_x) + (dy * self.gravity_y)) / max(self.radius, 1.0)
                     gravity_depth = 0.5 + gravity_depth * 0.5
-                    waterness = smoothstep(0.02, 0.55, density)
+                    waterness = smoothstep(0.02, 0.50, density)
                     surface_alpha = clamp(0.24 + waterness * 0.58, 0.0, 0.90)
                     edge_foam = smoothstep(0.08, 0.42, slope) * waterness
                     shimmer = 0.5 + 0.5 * math.sin(t * 2.2 + phase_shimmer[idx])
+                    wave_axis = (-self.gravity_y * dx + self.gravity_x * dy) / max(self.radius, 1.0)
+                    wave_plane = (self.gravity_x * dx + self.gravity_y * dy) / max(self.radius, 1.0)
+                    wave_train = 0.5 + 0.5 * math.sin(t * 5.2 + wave_axis * 18.0 + wave_plane * 6.0)
                     caustic_wave = 0.5 + 0.5 * math.sin(
-                        t * 4.0 + phase_caustic[idx] + grad_x * 7.0 - grad_y * 5.5 + density * 3.5
+                        t * 4.0 + phase_caustic[idx] + grad_x * 7.0 - grad_y * 5.5 + density * 3.5 + wave_axis * 8.0
                     )
                     caustic_strength = (0.22 + 0.78 * caustic_wave) * (0.2 + waterness * 0.8)
 
@@ -403,7 +414,7 @@ class WavesAndWaterDemo:
                         g = bg_g
                         b = bg_b
                     else:
-                        deep_mix = clamp(0.12 + gravity_depth * 0.68 + waterness * 0.20, 0.0, 1.0)
+                        deep_mix = clamp(0.10 + gravity_depth * 0.64 + waterness * 0.26 + (wave_train - 0.5) * 0.08, 0.0, 1.0)
                         tint_r = int(3 + 10 * deep_mix)
                         tint_g = int(78 + 110 * deep_mix)
                         tint_b = int(138 + 110 * deep_mix)
@@ -416,6 +427,11 @@ class WavesAndWaterDemo:
                         r = int(floor_r * (1.0 - surface_alpha) + tint_r * surface_alpha)
                         g = int(floor_g * (1.0 - surface_alpha) + tint_g * surface_alpha)
                         b = int(floor_b * (1.0 - surface_alpha) + tint_b * surface_alpha)
+
+                        wave_highlight = waterness * wave_train * 56.0
+                        r = clamp(int(r + wave_highlight * 0.08), 0, 255)
+                        g = clamp(int(g + wave_highlight * 0.34), 0, 255)
+                        b = clamp(int(b + wave_highlight * 0.54), 0, 255)
 
                         caustic_highlight = 24.0 + 136.0 * caustic_strength
                         r = clamp(int(r + caustic_highlight * 0.10), 0, 255)
