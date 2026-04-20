@@ -20,7 +20,10 @@ from badapple_waveshare import DisplayDriver, LCD_HEIGHT, LCD_WIDTH, SPI_BUS, SP
 SIM_SIZE = 60
 SCALE = LCD_WIDTH // SIM_SIZE
 CONTAINER_CENTER = (SIM_SIZE - 1) * 0.5
-CONTAINER_RADIUS = CONTAINER_CENTER - 0.35
+# Treat the panel as full 240x240 addressable space.
+# The display is physically round, but render coordinates are square.
+# Use an oversized radius so circular clipping paths do not squash visuals.
+CONTAINER_RADIUS = math.sqrt(2.0) * (CONTAINER_CENTER + 0.5) + 1.0
 CONTAINER_RADIUS_SQ = CONTAINER_RADIUS * CONTAINER_RADIUS
 INNER_RADIUS_SQ = (CONTAINER_RADIUS - 1.5) * (CONTAINER_RADIUS - 1.5)
 
@@ -96,7 +99,8 @@ class WavesAndWaterDemo:
 
         self.dx_values = [x - self.center for x in range(self.grid_w)]
         self.dy_values = [y - self.center for y in range(self.grid_h)]
-        self.base_x_values = [x * SCALE for x in range(self.grid_w)]
+        # Byte offsets into an RGB565 row buffer
+        self.base_x_values = [x * SCALE * 2 for x in range(self.grid_w)]
         self.base_y_values = [y * SCALE for y in range(self.grid_h)]
         self.row_stride = LCD_WIDTH * 2
         self.phase_shimmer = [0.22 * x + 0.17 * y for y in range(self.grid_h) for x in range(self.grid_w)]
@@ -232,26 +236,25 @@ class WavesAndWaterDemo:
                         self.vx[j] -= nx * cohesion
                         self.vy[j] -= ny * cohesion
 
-        # Circular boundary constraint.
+        # Full-frame rectangular boundary constraint (240x240 mapped domain).
         for i in range(particle_count):
-            dx = self.px[i] - self.center
-            dy = self.py[i] - self.center
-            d2 = dx * dx + dy * dy
-            if d2 > self.radius_sq:
-                dist = math.sqrt(d2)
-                nx = dx / dist
-                ny = dy / dist
-                limit = self.radius - 0.6
-                self.px[i] = self.center + nx * limit
-                self.py[i] = self.center + ny * limit
+            if self.px[i] < 0.35:
+                self.px[i] = 0.35
+                if self.vx[i] < 0.0:
+                    self.vx[i] = -self.vx[i] * WALL_BOUNCE
+            elif self.px[i] > self.grid_w - 1.35:
+                self.px[i] = self.grid_w - 1.35
+                if self.vx[i] > 0.0:
+                    self.vx[i] = -self.vx[i] * WALL_BOUNCE
 
-                vn = self.vx[i] * nx + self.vy[i] * ny
-                if vn > 0.0:
-                    self.vx[i] -= (1.0 + WALL_BOUNCE) * vn * nx
-                    self.vy[i] -= (1.0 + WALL_BOUNCE) * vn * ny
-
-                self.vx[i] *= 0.98
-                self.vy[i] *= 0.98
+            if self.py[i] < 0.35:
+                self.py[i] = 0.35
+                if self.vy[i] < 0.0:
+                    self.vy[i] = -self.vy[i] * WALL_BOUNCE
+            elif self.py[i] > self.grid_h - 1.35:
+                self.py[i] = self.grid_h - 1.35
+                if self.vy[i] > 0.0:
+                    self.vy[i] = -self.vy[i] * WALL_BOUNCE
 
     def _rasterize_density(self):
         cell_count = self.grid_w * self.grid_h
