@@ -40,10 +40,11 @@ LCD_HEIGHT = 240
 class DisplayDriver:
     """GC9A01A Display Driver"""
     
-    def __init__(self, verbose=False, spi_speed_hz=SPI_SPEED, backlight_active_high=True):
+    def __init__(self, verbose=False, spi_speed_hz=SPI_SPEED, backlight_active_high=True, use_gpio_cs=False):
         self.verbose = verbose
         self.spi_speed_hz = spi_speed_hz
         self.backlight_active_high = backlight_active_high
+        self.use_gpio_cs = use_gpio_cs
         
         # Initialize SPI
         self.spi = spidev.SpiDev()
@@ -61,14 +62,18 @@ class DisplayDriver:
         self.chip = gpiod.Chip("/dev/gpiochip0")
         
         gpio_config = {
-            LCD_CS_GPIO: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE),
             LCD_DC_GPIO: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE),
             LCD_RST_GPIO: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE),
             LCD_BL_GPIO: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE),
         }
+        if self.use_gpio_cs:
+            gpio_config[LCD_CS_GPIO] = gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE)
         
         self.lines = self.chip.request_lines(gpio_config, consumer="BadApple")
-        self._log(f"[GPIO] GPIO lines {LCD_CS_GPIO},{LCD_DC_GPIO},{LCD_RST_GPIO},{LCD_BL_GPIO} requested")
+        if self.use_gpio_cs:
+            self._log(f"[GPIO] GPIO lines {LCD_CS_GPIO},{LCD_DC_GPIO},{LCD_RST_GPIO},{LCD_BL_GPIO} requested")
+        else:
+            self._log(f"[GPIO] GPIO lines {LCD_DC_GPIO},{LCD_RST_GPIO},{LCD_BL_GPIO} requested (SPI HW CS)")
     
     def _log(self, msg, force=False):
         if self.verbose or force:
@@ -87,26 +92,30 @@ class DisplayDriver:
     def _write_command(self, cmd):
         """Write command byte (DC=0)"""
         self._gpio_set(LCD_DC_GPIO, 0)
-        self._gpio_set(LCD_CS_GPIO, 0)
+        if self.use_gpio_cs:
+            self._gpio_set(LCD_CS_GPIO, 0)
         self.spi.writebytes([cmd])
-        self._gpio_set(LCD_CS_GPIO, 1)
+        if self.use_gpio_cs:
+            self._gpio_set(LCD_CS_GPIO, 1)
         time.sleep(0.001)
     
     def _write_data_bytes(self, data):
         """Write data bytes (DC=1)"""
         self._gpio_set(LCD_DC_GPIO, 1)
-        self._gpio_set(LCD_CS_GPIO, 0)
+        if self.use_gpio_cs:
+            self._gpio_set(LCD_CS_GPIO, 0)
         
         # Send data in chunks to avoid kernel buffer limits
         max_chunk = 4000
-        if isinstance(data, (list, bytes)):
+        if isinstance(data, (list, bytes, bytearray)):
             for i in range(0, len(data), max_chunk):
                 chunk = data[i:i+max_chunk]
                 self.spi.writebytes(chunk)
         else:
             self.spi.writebytes([data])
         
-        self._gpio_set(LCD_CS_GPIO, 1)
+        if self.use_gpio_cs:
+            self._gpio_set(LCD_CS_GPIO, 1)
     
     def _write_cmd_data(self, cmd, data=None):
         """Write command followed by optional data"""
@@ -173,7 +182,8 @@ class DisplayDriver:
         self._log("[LCD] Initializing display...")
         
         # Set GPIO defaults
-        self._gpio_set(LCD_CS_GPIO, 1)
+        if self.use_gpio_cs:
+            self._gpio_set(LCD_CS_GPIO, 1)
         self._gpio_set(LCD_DC_GPIO, 0)
         self._set_backlight(False)
         
@@ -274,11 +284,12 @@ class DisplayDriver:
 class BadApplePlayer:
     """Bad Apple video player for display"""
     
-    def __init__(self, video_file=None, fps=30, spi_speed_hz=SPI_SPEED, backlight_active_high=True):
+    def __init__(self, video_file=None, fps=30, spi_speed_hz=SPI_SPEED, backlight_active_high=True, use_gpio_cs=False):
         self.display = DisplayDriver(
             verbose=True,
             spi_speed_hz=spi_speed_hz,
             backlight_active_high=backlight_active_high,
+            use_gpio_cs=use_gpio_cs,
         )
         self.video_file = video_file
         self.fps = fps
@@ -353,6 +364,7 @@ def main():
     parser.add_argument("--test", action="store_true", help="Run display test instead of playing video")
     parser.add_argument("--spi-hz", type=int, default=SPI_SPEED, help="SPI clock in Hz (default: 10000000)")
     parser.add_argument("--bl-active-low", action="store_true", help="Use active-low backlight polarity")
+    parser.add_argument("--gpio-cs", action="store_true", help="Drive CS with GPIO instead of SPI hardware CS")
     
     args = parser.parse_args()
     
@@ -364,6 +376,7 @@ def main():
             player = BadApplePlayer(
                 spi_speed_hz=args.spi_hz,
                 backlight_active_high=not args.bl_active_low,
+                use_gpio_cs=args.gpio_cs,
             )
             player.init()
             
@@ -395,6 +408,7 @@ def main():
                 fps=args.fps,
                 spi_speed_hz=args.spi_hz,
                 backlight_active_high=not args.bl_active_low,
+                use_gpio_cs=args.gpio_cs,
             )
             player.init()
             player.play()
