@@ -35,6 +35,9 @@ POSITION_RELAX = 0.50
 VISCOSITY = 0.055
 VELOCITY_DAMPING = 0.965
 WALL_BOUNCE = 0.25
+SKIN_STRETCH_COHESION = 0.026
+SKIN_BRIDGE_GAIN = 0.16
+SKIN_BRIDGE_THRESHOLD = 0.12
 
 MAGNET_BASE_SPEED = 7.0
 MAGNET_PULSE_SPEED = 22.0
@@ -393,7 +396,8 @@ class FerrofluidDancerDemo:
                         if dist > PARTICLE_REST_RADIUS * 0.90:
                             coh_q = 1.0 - (dist / INTERACTION_RADIUS)
                             if coh_q > 0.20:
-                                cohesion = coh_q * 0.045
+                                stretch_bias = SKIN_STRETCH_COHESION if dist > PARTICLE_REST_RADIUS * 1.08 else 0.0
+                                cohesion = coh_q * (0.045 + stretch_bias)
                                 self.px[i] += nx * cohesion
                                 self.py[i] += ny * cohesion
                                 self.px[j] -= nx * cohesion
@@ -478,6 +482,25 @@ class FerrofluidDancerDemo:
                 mid = self.blur[row + x]
                 dn = self.blur[dn_row + x]
                 self.density[row + x] = (up + mid * 2.0 + dn) * 0.25
+
+        for y in range(self.grid_h):
+            row = y * self.grid_w
+            up_row = max(0, y - 1) * self.grid_w
+            dn_row = min(self.grid_h - 1, y + 1) * self.grid_w
+            for x in range(self.grid_w):
+                left = self.density[row + max(0, x - 1)]
+                right = self.density[row + min(self.grid_w - 1, x + 1)]
+                up = self.density[up_row + x]
+                dn = self.density[dn_row + x]
+                support = max(left, right) + max(up, dn)
+                if support > SKIN_BRIDGE_THRESHOLD:
+                    bridge = (support - SKIN_BRIDGE_THRESHOLD) * SKIN_BRIDGE_GAIN
+                    self.blur[row + x] = self.density[row + x] + bridge
+                else:
+                    self.blur[row + x] = self.density[row + x]
+
+        for idx in range(cell_count):
+            self.density[idx] = max(self.density[idx], self.blur[idx])
 
         for idx in range(cell_count):
             d = self.density[idx]
