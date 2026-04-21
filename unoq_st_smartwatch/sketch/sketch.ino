@@ -1,3 +1,13 @@
+/*
+ * Author  : Martin Bogomolni
+ * Date    : 2026-04-21
+ * License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
+ *
+ * sketch.ino - ST Smartwatch App Lab renderer for Arduino Uno Q (STM32 side)
+ * Renders LCARS Star Trek smartwatch locally. Updates time/battery via Router Bridge RPC calls.
+ *
+ * Build:     ./build.sh unoq (or arduino-cli compile)
+ */
 #include <Arduino.h>
 #include <Arduino_RouterBridge.h>
 #include <Wire.h>
@@ -485,6 +495,7 @@ void pullWatchSync(unsigned long nowMs) {
 }
 }  // namespace
 
+// Initialize the board, LCD, and Router Bridge communication
 void setup() {
   Wire.begin();
   Wire.setClock(400000);
@@ -505,6 +516,7 @@ void setup() {
   Monitor.println("watch bridge ready");
 }
 
+// Main Smartwatch loop: Ping the Python host for new state, animate ECG logic
 void loop() {
   static unsigned long lastFrameMillis = 0;
   static unsigned long previousMillis = millis();

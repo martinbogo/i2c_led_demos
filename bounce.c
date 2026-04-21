@@ -5,7 +5,7 @@
  *
  * bounce.c - Bouncing ball on SSD1306 128x64 OLED via I2C (Pi 5)
  *
- * Compile:  gcc -o bounce bounce.c -lm
+ * Compile:  make bounce or ./build.sh pi
  * Run:      sudo ./bounce
  *
  * Pins: 1 (3.3V), 3 (SDA), 5 (SCL), 9 (GND)

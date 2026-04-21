@@ -8,7 +8,7 @@
  * Yellow zone (top 16px): FPS, time, frame counter
  * Blue zone  (bottom 48px): ripple-tank fluid sim with spray particles
  *
- * Compile:  gcc -O2 -o water water.c -lm
+ * Compile:  make water or ./build.sh pi
  * Run:      sudo ./water
  */
 

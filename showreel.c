@@ -12,7 +12,7 @@
  *   cinematic palace platformer, pre-rendered raymarched hero shot, and sine scroller finale
  * - Burn-in-friendly motion with continuous scene changes and a whiteout loop reset
  *
- * Compile:  gcc -O2 -o showreel showreel.c -lm
+ * Compile:  make showreel or ./build.sh pi
  * Run:      sudo ./showreel
  */
 

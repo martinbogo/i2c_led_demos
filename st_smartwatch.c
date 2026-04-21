@@ -10,7 +10,7 @@
  * - Yellow/Blue OLED physical integration creating the LCARS L-bracket
  * - Thick block vector fonts & solid LCARS structural geometry
  *
- * Compile:  gcc -O2 -o st_smartwatch st_smartwatch.c -lm
+ * Compile:  make st_smartwatch or ./build.sh pi
  * Run:      sudo ./st_smartwatch
  */
 

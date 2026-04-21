@@ -10,7 +10,7 @@
  * - Orbital progress rings are rotating segmented blobs 
  * - Digital time features slow pixel-shifting drift
  *
- * Compile:  gcc -O2 -o smartwatch smartwatch.c -lm
+ * Compile:  make smartwatch or ./build.sh pi
  * Run:      sudo ./smartwatch
  */
 

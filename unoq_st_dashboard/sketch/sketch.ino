@@ -1,3 +1,13 @@
+/*
+ * Author  : Martin Bogomolni
+ * Date    : 2026-04-21
+ * License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
+ *
+ * sketch.ino - ST Dashboard App Lab renderer for Arduino Uno Q (STM32 side)
+ * Renders LCARS Star Trek dashboard locally. Updates telemetry via Router Bridge RPC calls.
+ *
+ * Build:     ./build.sh unoq (or arduino-cli compile)
+ */
 #include <Arduino.h>
 #include <Arduino_RouterBridge.h>
 #include <Wire.h>
@@ -916,6 +926,7 @@ void pullSnapshot(unsigned long nowMs) {
 }
 }  // namespace
 
+// Initialize the board, LCD, and Router Bridge communication
 void setup() {
   Wire.begin();
   Wire.setClock(400000);
@@ -943,6 +954,7 @@ void setup() {
   Monitor.println("dashboard bridge ready");
 }
 
+// Main Dashboard loop: Ping the Python host for new state, render LCARS scenes
 void loop() {
   static unsigned long lastFrameMillis = 0;
   const unsigned long nowMs = millis();

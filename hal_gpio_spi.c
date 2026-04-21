@@ -1,4 +1,13 @@
 /*
+ * Author  : Martin Bogomolni
+ * Date    : 2026-04-21
+ * License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
+ *
+ * hal_gpio_spi.c - Software bitbanged SPI using Linux sysfs GPIO
+ * Provide bit-banged SPI primitives for driving GC9A01 LCD.
+ *
+ */
+/*
  * hal_gpio_spi.c - Hardware Abstraction Layer Implementation
  * Direct GPIO and SPI access via /sys/class/gpio and /dev/spidev
  * Note: This is a Raspberry Pi specific implementation (Linux only)

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Author  : Martin Bogomolni
+# Date    : 2026-04-21
+# License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
+
 """
 Ferrofluid dancer demo for the Waveshare 1.28" round GC9A01 display.
 

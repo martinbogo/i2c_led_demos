@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Author  : Martin Bogomolni
+# Date    : 2026-04-21
+# License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
+
 """
 Bad Apple video player for Waveshare 1.28" display
 Plays 1-bit monochrome video on a GC9A01 over SPI.

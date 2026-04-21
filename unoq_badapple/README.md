@@ -16,6 +16,11 @@ This is intentionally **not** using the standard Arduino Router bridge for frame
 - `host/badapple_stream.py` - Linux-side streamer that reads `bad_apple.bin.gz`, handshakes with the sketch, and streams frames over `/dev/ttyHS1`.
 - `python/main.py` - minimal placeholder App Lab Python app so `arduino-app-cli app restart` can compile and upload the sketch.
 
+## Build
+
+You can build the sketch portion on your host machine utilizing the repository's root build script:
+- `cd ../ && ./build.sh unoq`
+
 ## Deploy to the Uno Q
 
 Copy this folder to the board, for example into `/home/arduino/ArduinoApps/unoq-badapple`, then upload it with:

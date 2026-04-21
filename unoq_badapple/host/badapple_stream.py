@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+# Author  : Martin Bogomolni
+# Date    : 2026-04-21
+# License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
+#
+# badapple_stream.py - Linux-side streamer for Bad Apple on Arduino Uno Q
+# Reads bad_apple.bin.gz and streams raw pixel frames over internal UART (ttyHS1)
+# 
+# Run:      sudo systemctl stop arduino-router
+#           python3 badapple_stream.py /path/to/bad_apple.bin.gz
+#           sudo systemctl start arduino-router
+#
 import argparse
 import gzip
 import os

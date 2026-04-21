@@ -1,4 +1,15 @@
 /*
+ * Author  : Martin Bogomolni
+ * Date    : 2026-04-21
+ * License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
+ *
+ * elevated.c - SSD1306 custom video player for 128x64 OLED
+ * Uses a custom compressed PDM format for high framerate audio-synced video.
+ *
+ * Compile:  make elevated or ./build.sh pi
+ * Run:      sudo ./elevated
+ */
+/*
  * elevated.c - SSD1306 OLED adaptation of "Elevated" by RGBA and TBC
  *
  * This is a monochrome reinterpretation for the 128x64 split yellow/blue

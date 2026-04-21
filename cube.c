@@ -5,7 +5,7 @@
  *
  * cube.c - Rotating 3D wireframe cube on SSD1306 128x64 OLED via I2C (Pi 5)
  *
- * Compile:  gcc -o cube cube.c -lm
+ * Compile:  make cube or ./build.sh pi
  * Run:      sudo ./cube
  */
 

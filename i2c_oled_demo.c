@@ -12,7 +12,7 @@
  * - Compact procedural scenes with embedded hybrid spatiotemporal grayscale video playback
  * - Scene 10 uses a compiled-in `woz_pdm.h` asset, temporal FRC, and spatiotemporal blue-noise dithering
  *
- * Compile:  gcc -Os -s -ffunction-sections -fdata-sections -Wl,--gc-sections \
+ * Compile:  make i2c_oled_demo or ./build.sh pi
  *               -o i2c_oled_demo i2c_oled_demo.c -lm -lz
  * Run:      sudo ./i2c_oled_demo
  */

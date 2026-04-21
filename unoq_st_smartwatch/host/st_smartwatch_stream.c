@@ -1,4 +1,13 @@
 /*
+ * Author  : Martin Bogomolni
+ * Date    : 2026-04-21
+ * License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
+ *
+ * st_smartwatch_stream.c - Legacy direct-stream host renderer for ST Smartwatch on Uno Q
+ *
+ * Build:     ./build.sh unoq
+ */
+/*
  * Uno Q host-side port of st_smartwatch.c
  * Renders frames on the Linux side and streams them to the MCU OLED sink.
  */

@@ -12,9 +12,11 @@ The dashboard rendering has moved onto the STM32 sketch, which owns the SSD1306 
 
 ## Build and run
 
-Run the app normally from Arduino App Lab, or build the sketch profile with Arduino CLI.
+Run the app normally from Arduino App Lab, or natively build the sketch profile on your host using the repository's build system:
 
-The sketch profile pins the Bridge dependency stack used for local CLI builds:
+- `cd ../ && ./build.sh unoq`
+
+This automatically checks for `arduino-cli` and installs the required Bridge dependency stack used for local CLI builds:
 
 - `Arduino_RouterBridge (0.4.1)`
 - `Arduino_RPClite (0.2.1)`
@@ -23,9 +25,8 @@ The sketch profile pins the Bridge dependency stack used for local CLI builds:
 - `ArxContainer (0.7.0)`
 - `ArxTypeTraits (0.3.2)`
 
-Typical sketch build flow:
+Once built, you can upload the sketch profile using the standard deployment process:
 
-- `arduino-cli compile --profile default sketch`
 - `arduino-cli upload -p <board-ip> --upload-field password=<password> sketch`
 
 After the sketch is installed, start the app from Arduino App Lab. There is no need to stop `arduino-router`, claim `/dev/ttyHS1`, or toggle the router GPIO lines.

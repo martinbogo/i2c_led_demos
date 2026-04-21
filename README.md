@@ -61,24 +61,30 @@ Several of the programs assume the common split-color layout:
 
 ### Build directly on a Raspberry Pi
 
-Install the zlib development package, then build everything with `make`:
+Install the zlib development package, then build everything with `make pi`:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y zlib1g-dev
 make clean
-make
+make pi
 ```
 
-### Cross-build with Docker
+### Automatic Build Script (Docker & Native)
 
-If you are building from macOS or another machine with Docker installed:
+If you are building from macOS or another host machine:
 
 ```bash
-./build.sh
+./build.sh all
 ```
 
-That uses the included `Dockerfile` to build the binaries for Raspberry Pi 5 Linux aarch64.
+This script will:
+1. Cross-compile all Linux `aarch64` binaries (for Raspberry Pi 5 and the Linux side of the Uno Q) using Docker.
+2. Compile all the Arduino Uno Q MCU sketches (`.ino`) natively using `arduino-cli`.
+
+You can also target specific platforms:
+- `./build.sh pi` - Builds only the Raspberry Pi target payloads using Docker.
+- `./build.sh unoq` - Builds the Uno Q Linux host payloads (Docker) and MCU sketches (native `arduino-cli`).
 
 ## Run
 

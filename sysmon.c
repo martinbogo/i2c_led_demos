@@ -8,7 +8,7 @@
  * Yellow zone (top 16px): date, time, load average
  * Blue zone (bottom 48px): scrolling graphs of CPU%, MEM%, IO%
  *
- * Compile:  gcc -o sysmon sysmon.c -lm
+ * Compile:  make sysmon or ./build.sh pi
  * Run:      sudo ./sysmon
  */
 

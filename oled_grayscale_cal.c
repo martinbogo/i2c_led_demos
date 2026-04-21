@@ -1,4 +1,14 @@
 /*
+ * Author  : Martin Bogomolni
+ * Date    : 2026-04-21
+ * License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
+ *
+ * oled_grayscale_cal.c - Calibration utility for SSD1306 PWM-based grayscale
+ *
+ * Compile:  make oled_grayscale_cal or ./build.sh pi
+ * Run:      sudo ./oled_grayscale_cal
+ */
+/*
  * Interactive OLED grayscale calibration utility for the split yellow/blue SSD1306.
  *
  * Purpose:

@@ -1,4 +1,13 @@
 /*
+ * Author  : Martin Bogomolni
+ * Date    : 2026-04-21
+ * License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
+ *
+ * lcd_gc9a01.c - Low-level C driver for Waveshare 1.28" GC9A01 LCD
+ * Uses hal_gpio_spi for display commands and video frame pushing.
+ *
+ */
+/*
  * lcd_gc9a01.c - GC9A01A LCD Controller Driver Implementation
  * 240x240 RGB565 display via SPI
  */

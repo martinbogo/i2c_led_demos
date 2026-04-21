@@ -11,7 +11,7 @@
  * - Yellow/Blue OLED physical integration creating the LCARS L-bracket
  * - Thick block vector fonts & solid LCARS structural geometry
  *
- * Compile:  gcc -O2 -o st_dashboard st_dashboard.c -lm
+ * Compile:  make st_dashboard or ./build.sh pi
  * Run:      sudo ./st_dashboard
  */
 

@@ -13,7 +13,7 @@
  *
  * Simulates gentle flight manoeuvres with smooth noise.
  *
- * Compile:  gcc -O2 -o horizon horizon.c -lm
+ * Compile:  make horizon or ./build.sh pi
  * Run:      sudo ./horizon
  */
 

@@ -1,3 +1,9 @@
+# Author  : Martin Bogomolni
+# Date    : 2026-04-21
+# License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
+#
+# main.py - App Lab Python telemetry collector and Bridge RPC provider for ST Dashboard.
+#
 import os
 import time
 from dataclasses import dataclass, field

@@ -1,3 +1,7 @@
+# Author  : Martin Bogomolni
+# Date    : 2026-04-21
+# License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
+
 import sys
 
 # Dither Array translator restricted entirely to 128x48 boundaries

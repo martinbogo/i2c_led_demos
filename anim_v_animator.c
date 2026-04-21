@@ -5,7 +5,7 @@
  *
  * anim_v_animator.c - Scripted OLED recreation of a classic animator-versus-stick-figure short
  *
- * Compile:  gcc -O2 -o anim_v_animator anim_v_animator.c -lm
+ * Compile:  make anim_v_animator or ./build.sh pi
  * Run:      sudo ./anim_v_animator
  */
 

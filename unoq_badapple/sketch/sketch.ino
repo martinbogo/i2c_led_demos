@@ -1,3 +1,13 @@
+/*
+ * Author  : Martin Bogomolni
+ * Date    : 2026-04-21
+ * License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
+ *
+ * sketch.ino - Bad Apple video player for Arduino Uno Q (STM32 side)
+ * Receives packed 128x48 video frames over Serial1 (from host) and updates SSD1306 via I2C (Wire).
+ *
+ * Build:     ./build.sh unoq (or arduino-cli compile)
+ */
 #include <Arduino.h>
 #include <Wire.h>
 #include <stdint.h>
@@ -294,6 +304,7 @@ void handleCommand(char command) {
 }
 }  // namespace
 
+// Initialize the board, LCD, and serial links
 void setup() {
   Serial1.begin(SERIAL_BAUD);
   Serial1.setTimeout(1500);
@@ -315,6 +326,7 @@ void setup() {
   sendSerialLine("BOOT BADAPPLE_UNOQ");
 }
 
+// Main playback loop: Read encoded frames from Serial1 and write to SSD1306
 void loop() {
   char command = 0;
   if (!waitForMagicAndCommand(command)) {
