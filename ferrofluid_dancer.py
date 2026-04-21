@@ -39,6 +39,24 @@ SKIN_STRETCH_COHESION = 0.026
 SKIN_BRIDGE_GAIN = 0.16
 SKIN_BRIDGE_THRESHOLD = 0.12
 
+SETTLING_ACCEL = 0.18
+POOL_RETURN_X = 0.55
+POOL_RETURN_Y = 1.35
+POOL_SHAPE_SQUASH = 0.72
+MAGNET_ATTACK = 30.0
+MAGNET_HOLD = 10.5
+MAGNET_SWIRL = 4.8
+MAGNET_PATH_X_RATIO = 0.28
+MAGNET_PATH_Y_RATIO = 0.17
+FIELD_ATTACK_RATE = 0.34
+FIELD_RELEASE_RATE = 0.12
+FIELD_ORBIT_LERP = 0.20
+RELEASE_COLLAPSE_FORCE = 6.2
+RELEASE_COLLAPSE_DECAY = 0.86
+SPIKE_FIELD_RESPONSE = 0.22
+SPIKE_INSTABILITY_THRESHOLD = 0.16
+SPIKE_LEAN_GAIN = 0.32
+
 MAGNET_BASE_SPEED = 7.0
 MAGNET_PULSE_SPEED = 22.0
 SWIRL_SPEED = 3.6
@@ -126,6 +144,14 @@ class FerrofluidDancerDemo:
         self.song_seed = random.random() * 1000.0
         self.next_silence_time = random.uniform(10.0, 18.0)
         self.silence_until = -1.0
+        self.pool_x = self.center
+        self.pool_y = self.center + self.radius * 0.50
+        self.field_x = self.center
+        self.field_y = self.center - self.radius * 0.16
+        self.field_strength = 0.0
+        self.spike_drive = 0.0
+        self.release_collapse = 0.0
+        self.field_phase = random.random() * math.tau
 
         self._spawn_initial_particles()
         self._build_background_map()
@@ -135,16 +161,38 @@ class FerrofluidDancerDemo:
             print(message)
 
     def _spawn_initial_particles(self):
-        spawn_radius = self.radius * 0.36
+        spawn_radius_x = self.radius * 0.30
+        spawn_radius_y = self.radius * 0.16
         while len(self.px) < PARTICLE_COUNT:
             angle = random.uniform(0.0, math.tau)
-            rad = spawn_radius * math.sqrt(random.random())
-            x = self.center + math.cos(angle) * rad
-            y = self.center + math.sin(angle) * rad
+            rad = math.sqrt(random.random())
+            x = self.pool_x + math.cos(angle) * spawn_radius_x * rad
+            y = self.pool_y + math.sin(angle) * spawn_radius_y * rad
             self.px.append(x)
             self.py.append(y)
             self.vx.append((random.random() - 0.5) * 0.7)
             self.vy.append((random.random() - 0.5) * 0.7)
+
+    def _update_field_state(self, dt, burst):
+        target_strength = clamp(self.audio_level * 1.12 + burst * 0.30 - 0.03, 0.0, 1.0)
+        response = FIELD_ATTACK_RATE if target_strength > self.field_strength else FIELD_RELEASE_RATE
+        self.field_strength += (target_strength - self.field_strength) * response
+
+        if target_strength < self.field_strength and self.field_strength - target_strength > 0.05:
+            self.release_collapse = max(self.release_collapse, (self.field_strength - target_strength) * RELEASE_COLLAPSE_FORCE)
+
+        self.release_collapse *= RELEASE_COLLAPSE_DECAY
+        self.spike_drive += (self.field_strength - self.spike_drive) * SPIKE_FIELD_RESPONSE
+
+        t = self.sim_time
+        phase = self.field_phase + t * (0.58 + 0.06 * math.sin(0.17 * t + self.song_seed))
+        amp_x = self.radius * MAGNET_PATH_X_RATIO * (0.30 + 0.70 * self.field_strength)
+        amp_y = self.radius * MAGNET_PATH_Y_RATIO * (0.25 + 0.75 * self.field_strength)
+        target_x = self.center + math.sin(phase) * amp_x
+        target_y = self.center - self.radius * 0.12 + math.sin(phase * 2.0 + 0.9) * amp_y
+
+        self.field_x += (target_x - self.field_x) * FIELD_ORBIT_LERP
+        self.field_y += (target_y - self.field_y) * FIELD_ORBIT_LERP
 
     def _sim_audio_level(self, t):
         if t >= self.next_silence_time:
@@ -253,11 +301,6 @@ class FerrofluidDancerDemo:
         t = self.sim_time
         self.audio_level = self._sim_audio_level(t)
 
-        audio_responsive_gain = 0.4 + 0.6 * (self.audio_level ** 0.5)
-        pulse = 0.5 + 0.5 * math.sin(t * 10.5)
-        magnet_speed = (MAGNET_BASE_SPEED + MAGNET_PULSE_SPEED * pulse) * audio_responsive_gain
-        swirl_speed = SWIRL_SPEED * (0.3 + 0.7 * self.audio_level)
-
         beat_cycle = t % 4.0
         burst = 0.0
         if beat_cycle < 2.0:
@@ -265,73 +308,93 @@ class FerrofluidDancerDemo:
                 env = max(0.0, 1.0 - abs(beat_cycle - hit_time) * 10.0)
                 burst = max(burst, env * env)
 
+        self._update_field_state(dt, burst)
+
+        audio_responsive_gain = 0.18 + 0.82 * (self.field_strength ** 0.7)
+        pulse = 0.5 + 0.5 * math.sin(t * 10.5)
+        magnet_speed = (MAGNET_BASE_SPEED + MAGNET_PULSE_SPEED * pulse) * audio_responsive_gain
+        swirl_speed = SWIRL_SPEED * (0.12 + 0.88 * self.field_strength)
+
         cx = sum(self.px) / max(1, len(self.px))
         cy = sum(self.py) / max(1, len(self.py))
 
-        gravity_speed = 1.2
+        gravity_step = SETTLING_ACCEL * dt
         max_magnet_step = magnet_speed * dt
         max_swirl_step = swirl_speed * dt
-        gravity_step = gravity_speed * dt
+        active_field = self.field_strength > 0.025
 
         for i in range(len(self.px)):
-            dx = self.px[i] - self.center
-            dy = self.py[i] - self.center
-            dist = math.sqrt(dx * dx + dy * dy) + 1e-6
-            nx = dx / dist
-            ny = dy / dist
+            field_dx = self.field_x - self.px[i]
+            field_dy = self.field_y - self.py[i]
+            field_dist = math.sqrt(field_dx * field_dx + field_dy * field_dy) + 1e-6
+            to_field_x = field_dx / field_dist
+            to_field_y = field_dy / field_dist
 
-            self.py[i] += gravity_step
+            self.vy[i] += gravity_step
 
-            far_gain = clamp(dist / max(self.radius * 0.7, 1.0), 0.2, 1.3)
-            pull_step = max_magnet_step * far_gain
+            pool_dx = self.pool_x - self.px[i]
+            pool_dy = self.pool_y - self.py[i]
+            settle_gain = 1.0 - self.field_strength
+            self.vx[i] += pool_dx * dt * POOL_RETURN_X * settle_gain
+            self.vy[i] += pool_dy * dt * POOL_RETURN_Y * settle_gain
 
-            spike_strength = (self.audio_level ** 1.05) * 5.8
-            if dist > self.radius * 0.42:
-                spike_push = spike_strength * dt * (7.0 + 12.0 * burst)
-                self.px[i] += nx * spike_push
-                self.py[i] += ny * spike_push
+            if self.release_collapse > 0.02:
+                cdx = cx - self.px[i]
+                cdy = cy - self.py[i]
+                self.vx[i] += cdx * dt * self.release_collapse * 0.55
+                self.vy[i] += cdy * dt * self.release_collapse * 0.55
 
-            angle = math.atan2(dy, dx)
+            if active_field:
+                far_gain = clamp(1.35 - field_dist / max(self.radius * 0.90, 1.0), 0.18, 1.35)
+                pull_step = max_magnet_step * far_gain
+                magnetic_accel = dt * self.field_strength * (MAGNET_ATTACK + MAGNET_HOLD * burst) / (1.0 + field_dist * 0.16)
+                self.vx[i] += to_field_x * magnetic_accel
+                self.vy[i] += to_field_y * magnetic_accel
+                self.px[i] += to_field_x * pull_step
+                self.py[i] += to_field_y * pull_step
+
+                angle = math.atan2(self.py[i] - self.field_y, self.px[i] - self.field_x)
+            else:
+                angle = math.atan2(self.py[i] - cy, self.px[i] - cx)
+
             star_phase = angle * STAR_POINTS
             star_wave = 0.5 + 0.5 * math.cos(star_phase)
             star_focus = star_wave ** STAR_SHARPNESS
 
-            spoke_boost = 1.0 + burst * (1.8 * star_focus - 0.35 * (1.0 - star_focus))
-            spoke_pull = pull_step * clamp(spoke_boost, 0.65, 2.6)
-            self.px[i] -= nx * spoke_pull
-            self.py[i] -= ny * spoke_pull
+            if active_field and self.spike_drive > SPIKE_INSTABILITY_THRESHOLD:
+                spoke_boost = 1.0 + burst * (1.5 * star_focus - 0.28 * (1.0 - star_focus))
+                spoke_push = dt * self.spike_drive * 5.6 * clamp(spoke_boost, 0.40, 2.20)
+                self.px[i] -= to_field_x * spoke_push * (0.25 + 0.75 * star_focus)
+                self.py[i] -= to_field_y * spoke_push * (0.25 + 0.75 * star_focus)
 
-            if dist > self.radius * 0.46:
-                spoke_push = burst * dt * 7.5 * (star_focus ** 0.6)
-                self.px[i] += nx * spoke_push
-                self.py[i] += ny * spoke_push
+                field_lateral_x = -to_field_y
+                field_lateral_y = to_field_x
+                align_sign = math.sin(star_phase)
+                steer = burst * dt * 1.2 * (1.0 - star_focus)
+                self.px[i] += field_lateral_x * steer * (-1.0 if align_sign > 0.0 else 1.0)
+                self.py[i] += field_lateral_y * steer * (-1.0 if align_sign > 0.0 else 1.0)
 
-            peak_gate = clamp((burst - 0.62) / 0.38, 0.0, 1.0)
-            target_radius = self.radius * PEAK_SPIKE_RADIUS_RATIO
-            radius_error = target_radius - dist
-            if star_focus > 0.22 and peak_gate > 0.0:
-                target_drive = dt * peak_gate * star_focus * 14.0
-                self.px[i] += nx * radius_error * target_drive
-                self.py[i] += ny * radius_error * target_drive
+                lean = dt * self.spike_drive * SPIKE_LEAN_GAIN * star_focus
+                self.px[i] += to_field_x * lean
+                self.py[i] += to_field_y * lean
 
-            tx = -ny
-            ty = nx
-            align_sign = math.sin(star_phase)
-            steer = burst * dt * 1.6 * (1.0 - star_focus)
-            self.px[i] += tx * steer * (-1.0 if align_sign > 0.0 else 1.0)
-            self.py[i] += ty * steer * (-1.0 if align_sign > 0.0 else 1.0)
-
-            merge_gain = (1.0 - burst) * (0.35 + 0.65 * (1.0 - self.audio_level))
+            merge_gain = (1.0 - self.field_strength) * (0.42 + 0.58 * (1.0 - self.audio_level))
             cdx = self.px[i] - cx
             cdy = self.py[i] - cy
             clen = math.sqrt(cdx * cdx + cdy * cdy) + 1e-6
-            self.px[i] -= (cdx / clen) * dt * 2.8 * merge_gain
-            self.py[i] -= (cdy / clen) * dt * 2.8 * merge_gain
+            self.px[i] -= (cdx / clen) * dt * 1.6 * merge_gain
+            self.py[i] -= (cdy / clen) * dt * 1.1 * merge_gain
 
-            twirl = 0.55 + 0.45 * math.sin(t * 3.2 + dist * 0.24)
-            swirl = max_swirl_step * twirl
-            self.px[i] += -ny * swirl
-            self.py[i] += nx * swirl
+            if active_field and field_dist < self.radius * 0.22:
+                twirl = 0.45 + 0.55 * math.sin(t * 3.2 + field_dist * 0.35)
+                swirl = max_swirl_step * twirl
+                self.vx[i] += -to_field_y * swirl * MAGNET_SWIRL * 0.12
+                self.vy[i] += to_field_x * swirl * MAGNET_SWIRL * 0.12
+
+            if not active_field:
+                squash = clamp((self.py[i] - self.pool_y) / max(self.radius * 0.30, 1.0), -1.0, 1.0)
+                self.vx[i] *= 0.992 - 0.010 * (1.0 - abs(squash))
+                self.vy[i] *= 0.992
 
     def step(self, dt):
         self.sim_time += dt
@@ -520,7 +583,7 @@ class FerrofluidDancerDemo:
         bg_g = self.bg_g
         bg_b = self.bg_b
         t = self.sim_time
-        pulse_r = 2.2 + 6.5 * self.audio_level
+        pulse_r = 1.8 + 5.6 * self.field_strength
 
         for sy in range(self.grid_h):
             dy = self.dy_values[sy]
@@ -548,9 +611,11 @@ class FerrofluidDancerDemo:
                 grad_x = density_r - density_l
                 grad_y = density_d - density_u
 
-                dist_center = math.sqrt(dx * dx + dy * dy)
-                pulse = math.exp(-((dist_center - pulse_r) * (dist_center - pulse_r)) / 16.0)
-                pulse *= 0.55 + 0.45 * math.sin(t * 12.0)
+                field_dx = sx - self.field_x
+                field_dy = sy - self.field_y
+                field_dist = math.sqrt(field_dx * field_dx + field_dy * field_dy)
+                pulse = math.exp(-((field_dist - pulse_r) * (field_dist - pulse_r)) / 14.0)
+                pulse *= (0.50 + 0.50 * math.sin(t * 12.0)) * self.field_strength
 
                 base_waterness = smoothstep(0.002, 0.19, density)
                 if is_fluid:
@@ -580,14 +645,14 @@ class FerrofluidDancerDemo:
 
                 if not aa_needed:
                     if base_waterness > 0.28:
-                        r = int(clamp(8 + spec_bright * 0.25, 0, 255))
-                        g = int(clamp(8 + spec_bright * 0.50, 0, 255))
-                        b = int(clamp(10 + spec_bright * 0.75, 0, 255))
+                        r = int(clamp(5 + spec_bright * 0.24, 0, 255))
+                        g = int(clamp(7 + spec_bright * 0.46, 0, 255))
+                        b = int(clamp(11 + spec_bright * 0.78, 0, 255))
                     else:
                         surface_alpha = clamp(0.64 + base_waterness * 0.33, 0.0, 0.993)
-                        r = int(base_r * (1.0 - surface_alpha) + 6 * surface_alpha)
-                        g = int(base_g * (1.0 - surface_alpha) + 6 * surface_alpha)
-                        b = int(base_b * (1.0 - surface_alpha) + 8 * surface_alpha)
+                        r = int(base_r * (1.0 - surface_alpha) + 5 * surface_alpha)
+                        g = int(base_g * (1.0 - surface_alpha) + 7 * surface_alpha)
+                        b = int(base_b * (1.0 - surface_alpha) + 10 * surface_alpha)
                         pulse_boost = int(14 * pulse * (1.0 - base_waterness) * (1.0 - base_waterness))
                         r = clamp(r + pulse_boost, 0, 255)
                         g = clamp(g + pulse_boost, 0, 255)
@@ -615,14 +680,14 @@ class FerrofluidDancerDemo:
                             waterness = max(waterness, base_waterness * 0.85)
 
                             if waterness > 0.28:
-                                r = clamp(8 + spec_bright * 0.25, 0, 255)
-                                g = clamp(8 + spec_bright * 0.50, 0, 255)
-                                b = clamp(10 + spec_bright * 0.75, 0, 255)
+                                r = clamp(5 + spec_bright * 0.24, 0, 255)
+                                g = clamp(7 + spec_bright * 0.46, 0, 255)
+                                b = clamp(11 + spec_bright * 0.78, 0, 255)
                             else:
                                 surface_alpha = clamp(0.64 + waterness * 0.33, 0.0, 0.993)
-                                r = int(base_r * (1.0 - surface_alpha) + 6 * surface_alpha)
-                                g = int(base_g * (1.0 - surface_alpha) + 6 * surface_alpha)
-                                b = int(base_b * (1.0 - surface_alpha) + 8 * surface_alpha)
+                                r = int(base_r * (1.0 - surface_alpha) + 5 * surface_alpha)
+                                g = int(base_g * (1.0 - surface_alpha) + 7 * surface_alpha)
+                                b = int(base_b * (1.0 - surface_alpha) + 10 * surface_alpha)
                                 pulse_boost = int(14 * pulse * (1.0 - waterness) * (1.0 - waterness))
                                 r = clamp(r + pulse_boost, 0, 255)
                                 g = clamp(g + pulse_boost, 0, 255)
