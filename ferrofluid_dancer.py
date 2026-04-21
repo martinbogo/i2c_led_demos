@@ -30,16 +30,16 @@ INTERACTION_RADIUS = PARTICLE_REST_RADIUS * 2.7
 INTERACTION_RADIUS_SQ = INTERACTION_RADIUS * INTERACTION_RADIUS
 GRID_CELL_SIZE = 3.2
 
-PRESSURE_PUSH = 0.24
+PRESSURE_PUSH = 0.22
 POSITION_RELAX = 0.50
-VISCOSITY = 0.020
-VELOCITY_DAMPING = 0.935
+VISCOSITY = 0.045
+VELOCITY_DAMPING = 0.955
 WALL_BOUNCE = 0.25
 
 MAGNET_BASE_SPEED = 7.0
 MAGNET_PULSE_SPEED = 22.0
 SWIRL_SPEED = 3.6
-STAR_POINTS = 12
+STAR_POINTS = 8
 STAR_SHARPNESS = 16.0
 PEAK_SPIKE_RADIUS_RATIO = 0.80
 TARGET_FPS = 60
@@ -373,6 +373,16 @@ class FerrofluidDancerDemo:
                         self.vx[j] -= rvx * VISCOSITY
                         self.vy[j] -= rvy * VISCOSITY
 
+                        # Cohesion term: nearby particles lightly attract to keep
+                        # a continuous surface and suppress isolated "ball" look.
+                        if dist > PARTICLE_REST_RADIUS * 0.95:
+                            coh_q = 1.0 - (dist / INTERACTION_RADIUS)
+                            cohesion = max(0.0, coh_q) ** 2 * 0.055
+                            self.px[i] += nx * cohesion
+                            self.py[i] += ny * cohesion
+                            self.px[j] -= nx * cohesion
+                            self.py[j] -= ny * cohesion
+
         # Circular boundary constraint.
         for i in range(particle_count):
             dx = self.px[i] - self.center
@@ -413,9 +423,9 @@ class FerrofluidDancerDemo:
                     dx = (sx + 0.5) - x
                     dy = (sy + 0.5) - y
                     d2 = dx * dx + dy * dy
-                    if d2 > 3.2:
+                    if d2 > 5.0:
                         continue
-                    weight = (1.0 - d2 / 3.2) * 2.0
+                    weight = (1.0 - d2 / 5.0) * 2.2
                     self.density[sy * self.grid_w + sx] += weight
 
         # Two blur passes.
@@ -435,7 +445,26 @@ class FerrofluidDancerDemo:
                 up = self.blur[up_row + x]
                 mid = self.blur[row + x]
                 dn = self.blur[dn_row + x]
-                self.density[row + x] = (up + mid * 1.2 + dn) / 3.2
+                self.density[row + x] = (up + mid * 1.6 + dn) / 3.6
+
+        # Third blur pass to merge tiny particle islands into a continuous sheet.
+        for y in range(self.grid_h):
+            row = y * self.grid_w
+            for x in range(self.grid_w):
+                left = self.density[row + max(0, x - 1)]
+                mid = self.density[row + x]
+                right = self.density[row + min(self.grid_w - 1, x + 1)]
+                self.blur[row + x] = (left + mid * 2.0 + right) * 0.25
+
+        for y in range(self.grid_h):
+            row = y * self.grid_w
+            up_row = max(0, y - 1) * self.grid_w
+            dn_row = min(self.grid_h - 1, y + 1) * self.grid_w
+            for x in range(self.grid_w):
+                up = self.blur[up_row + x]
+                mid = self.blur[row + x]
+                dn = self.blur[dn_row + x]
+                self.density[row + x] = (up + mid * 2.0 + dn) * 0.25
 
     def render_frame(self):
         self._rasterize_density()
@@ -490,7 +519,7 @@ class FerrofluidDancerDemo:
                     pulse = math.exp(-((dist_center - pulse_r) * (dist_center - pulse_r)) / 16.0)
                     pulse *= 0.55 + 0.45 * math.sin(t * 12.0)
 
-                    waterness = smoothstep(0.02, 0.40, density)
+                    waterness = smoothstep(0.01, 0.26, density)
 
                     # Dense fluid: pure black base with bright specular highlights.
                     if waterness > 0.4:
@@ -523,7 +552,7 @@ class FerrofluidDancerDemo:
                         base_g = bg_g[idx]
                         base_b = bg_b[idx]
 
-                        surface_alpha = clamp(0.25 + waterness * 0.50, 0.0, 0.95)
+                        surface_alpha = clamp(0.40 + waterness * 0.50, 0.0, 0.98)
                         fluid_r = 6
                         fluid_g = 6
                         fluid_b = 8
