@@ -36,8 +36,8 @@ VISCOSITY = 0.020
 VELOCITY_DAMPING = 0.935
 WALL_BOUNCE = 0.25
 
-MAGNET_BASE_SPEED = 4.5
-MAGNET_PULSE_SPEED = 12.0
+MAGNET_BASE_SPEED = 6.0
+MAGNET_PULSE_SPEED = 16.0
 SWIRL_SPEED = 3.0
 TARGET_FPS = 60
 PHYSICS_HZ = 30.0
@@ -238,9 +238,9 @@ class FerrofluidDancerDemo:
 
             # Spike formation during beats: particles at the surface get pushed outward
             # along the radial direction to form characteristic ferrofluid spikes.
-            spike_strength = (self.audio_level ** 1.5) * 1.5
-            if dist > self.radius * 0.55:  # Only at fluid surface
-                spike_push = spike_strength * dt * 4.0
+            spike_strength = (self.audio_level ** 1.2) * 3.5  # Much stronger: 1.2 power, 3.5x multiplier
+            if dist > self.radius * 0.42:  # Broader range: from 42% radius outward
+                spike_push = spike_strength * dt * 6.5  # Much more aggressive push
                 self.px[i] += nx * spike_push
                 self.py[i] += ny * spike_push
 
