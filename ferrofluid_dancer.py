@@ -688,7 +688,7 @@ class FerrofluidDancerDemo:
                     normal_y /= normal_len
                     normal_z /= normal_len
 
-                light_x, light_y, light_z = -0.40, -0.45, 0.80
+                light_x, light_y, light_z = -0.18, -0.22, 0.96
                 spec = max(0.0, normal_x * light_x + normal_y * light_y + normal_z * light_z)
                 spec = spec ** 16
                 spec_bright = int(spec * 255.0)
