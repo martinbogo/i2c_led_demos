@@ -69,10 +69,9 @@ def pack_panel_color(r, g, b):
     """Pack color for the current panel configuration.
 
     The GC9A01 init in `badapple_waveshare.py` uses MADCTL=0x08, which means
-    the panel is in BGR mode. Swapping red/blue here keeps the rendered result
-    visually correct without disturbing the rest of the established driver path.
+    bit 1 (BGR) is 0, so the panel is in RGB mode. Pack accordingly.
     """
-    return ((b & 0xF8) << 8) | ((g & 0xFC) << 3) | (r >> 3)
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
 
 class WavesAndWaterDemo:

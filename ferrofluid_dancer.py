@@ -59,8 +59,8 @@ def smoothstep(edge0, edge1, value):
 
 
 def pack_panel_color(r, g, b):
-    # Panel is in BGR mode from the GC9A01 init path.
-    return ((b & 0xF8) << 8) | ((g & 0xFC) << 3) | (r >> 3)
+    # Panel MADCTL=0x08 has bit 1 (BGR) = 0, so it is in RGB mode, not BGR.
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
 
 class FerrofluidDancerDemo:
