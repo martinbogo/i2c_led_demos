@@ -117,6 +117,9 @@ class FerrofluidDancerDemo:
 
         self.sim_time = 0.0
         self.audio_level = 0.0
+        self.song_seed = random.random() * 1000.0
+        self.next_silence_time = random.uniform(10.0, 18.0)
+        self.silence_until = -1.0
 
         self._spawn_initial_particles()
         self._build_background_map()
@@ -138,45 +141,87 @@ class FerrofluidDancerDemo:
             self.vy.append((random.random() - 0.5) * 0.7)
 
     def _sim_audio_level(self, t):
-        # Simulate realistic rock/electronic music with kick, snare, hi-hat, bass.
-        # Pattern repeats every 4 seconds (musical phrase: 2s music + 2s silence/sparse).
-        beat_cycle = t % 4.0
-        
-        # Only play dense drums for first 2 seconds of cycle, sparse for next 2 seconds.
-        if beat_cycle < 2.0:
-            # Kick drum: strong at 0.0, 0.5, 1.0, 1.5 seconds
-            kick = 0.0
-            for kick_time in [0.0, 0.5, 1.0, 1.5]:
-                kick_envelope = max(0.0, 1.0 - abs(beat_cycle - kick_time) * 6.0)
-                kick = max(kick, kick_envelope ** 2.0)
-            
-            # Snare: hits at 0.5, 1.5 (on the 2nd and 4th beat)
-            snare = 0.0
-            for snare_time in [0.5, 1.5]:
-                snare_envelope = max(0.0, 1.0 - abs(beat_cycle - snare_time) * 8.0)
-                snare = max(snare, snare_envelope ** 1.5)
-            
-            # Hi-hat: continuous sixteenth-note pattern (every 0.25s)
-            hihat = 0.0
-            for hihat_time in [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75]:
-                hihat_envelope = max(0.0, 1.0 - abs(beat_cycle - hihat_time) * 16.0)
-                hihat = max(hihat, hihat_envelope ** 2.5)
-            
-            # Bass line: low-frequency swell
-            bass = 0.5 + 0.5 * math.sin(beat_cycle * math.pi)
-            bass = max(0.3, bass)
-            
-            # Mix everything: kick is most energetic, snare adds punch, hihat adds shimmer.
-            energy = 0.08 + kick * 0.40 + snare * 0.18 + hihat * 0.12 + bass * 0.12
+        # Occasional short silence gap so the ferrofluid can settle.
+        if t >= self.next_silence_time:
+            gap = random.uniform(0.85, 2.00)
+            self.silence_until = t + gap
+            self.next_silence_time = t + random.uniform(9.0, 20.0)
+
+        if t < self.silence_until:
+            return 0.0
+
+        # Rock-song form over 64s: intro(8), verse(16), chorus(16), bridge(8), chorus(16).
+        tempo_bpm = 112.0
+        beat = 60.0 / tempo_bpm
+        bar = beat * 4.0
+
+        song_t = t % 64.0
+        if song_t < 8.0:
+            section = "intro"
+        elif song_t < 24.0:
+            section = "verse"
+        elif song_t < 40.0:
+            section = "chorus"
+        elif song_t < 48.0:
+            section = "bridge"
         else:
-            # Sparse or silence: minimal energy, occasional hi-hat only
-            sparse_cycle = beat_cycle - 2.0
-            hihat = 0.0
-            for hihat_time in [0.3, 1.0, 1.7]:  # Sparse hi-hat hits
-                hihat_envelope = max(0.0, 1.0 - abs(sparse_cycle - hihat_time) * 8.0)
-                hihat = max(hihat, hihat_envelope ** 2.5)
-            energy = 0.02 + hihat * 0.06
-        
+            section = "chorus2"
+
+        bar_t = t % bar
+        bar_idx = int(t / bar)
+
+        def cyclic_dist(a, b, period):
+            return abs((a - b + period * 0.5) % period - period * 0.5)
+
+        def hit_train(hit_times, sharpness, exponent):
+            level = 0.0
+            for ht in hit_times:
+                d = cyclic_dist(bar_t, ht, bar)
+                env = max(0.0, 1.0 - d * sharpness)
+                level = max(level, env ** exponent)
+            return level
+
+        if section == "intro":
+            kick = hit_train([0.0, 2.0 * beat], 4.8, 2.0)
+            snare = hit_train([2.0 * beat], 5.5, 1.6)
+            hihat = hit_train([0.0, beat, 2.0 * beat, 3.0 * beat], 7.0, 2.0)
+            section_gain = 0.70
+        elif section == "verse":
+            kick = hit_train([0.0, 1.5 * beat, 2.0 * beat], 5.8, 2.0)
+            snare = hit_train([beat, 3.0 * beat], 7.0, 1.6)
+            hihat = hit_train([i * 0.5 * beat for i in range(8)], 11.0, 2.2)
+            section_gain = 0.92
+        elif section == "bridge":
+            kick = hit_train([0.0, 2.75 * beat], 4.4, 1.9)
+            snare = hit_train([1.5 * beat, 3.0 * beat], 5.2, 1.6)
+            hihat = hit_train([0.0, 2.0 * beat], 8.0, 2.0)
+            section_gain = 0.78
+        else:
+            kick = hit_train([0.0, beat, 2.0 * beat, 2.5 * beat], 6.8, 2.2)
+            snare = hit_train([beat, 3.0 * beat], 8.5, 1.7)
+            hihat = hit_train([i * 0.25 * beat for i in range(16)], 14.0, 2.4)
+            section_gain = 1.00
+
+        # End-of-phrase fill every 8 bars, last beat only.
+        fill = 0.0
+        if bar_idx % 8 == 7 and bar_t > 3.0 * beat:
+            fill = hit_train([3.0 * beat, 3.25 * beat, 3.5 * beat, 3.75 * beat], 16.0, 2.0)
+
+        # Bass follows a simple harmonic pulse with slight phrasing variation.
+        phrase = (bar_idx % 4)
+        bass_freq = 1.6 + 0.15 * phrase
+        bass = 0.5 + 0.5 * math.sin((t + self.song_seed) * bass_freq)
+        bass = max(0.22, bass)
+
+        energy = (
+            0.04
+            + kick * 0.43
+            + snare * 0.21
+            + hihat * 0.13
+            + bass * 0.14
+            + fill * 0.12
+        ) * section_gain
+
         return clamp(energy, 0.0, 1.0)
 
     def _build_background_map(self):
