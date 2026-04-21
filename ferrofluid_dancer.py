@@ -36,9 +36,9 @@ VISCOSITY = 0.020
 VELOCITY_DAMPING = 0.935
 WALL_BOUNCE = 0.25
 
-MAGNET_BASE_SPEED = 1.0
-MAGNET_PULSE_SPEED = 7.2
-SWIRL_SPEED = 1.8
+MAGNET_BASE_SPEED = 4.5
+MAGNET_PULSE_SPEED = 12.0
+SWIRL_SPEED = 3.0
 TARGET_FPS = 60
 PHYSICS_HZ = 30.0
 SPI_SPEED_HZ = 80000000
@@ -136,33 +136,43 @@ class FerrofluidDancerDemo:
 
     def _sim_audio_level(self, t):
         # Simulate realistic rock/electronic music with kick, snare, hi-hat, bass.
-        # Pattern repeats every 2 seconds (4 bars at 120 BPM quarter-note = 0.5s per beat).
-        beat_cycle = t % 2.0
+        # Pattern repeats every 4 seconds (musical phrase: 2s music + 2s silence/sparse).
+        beat_cycle = t % 4.0
         
-        # Kick drum: strong at 0.0, 0.5, 1.0, 1.5 seconds
-        kick = 0.0
-        for kick_time in [0.0, 0.5, 1.0, 1.5]:
-            kick_envelope = max(0.0, 1.0 - abs(beat_cycle - kick_time) * 6.0)
-            kick = max(kick, kick_envelope ** 2.0)
-        
-        # Snare: hits at 0.5, 1.5 (on the 2nd and 4th beat)
-        snare = 0.0
-        for snare_time in [0.5, 1.5]:
-            snare_envelope = max(0.0, 1.0 - abs(beat_cycle - snare_time) * 8.0)
-            snare = max(snare, snare_envelope ** 1.5)
-        
-        # Hi-hat: continuous sixteenth-note pattern (every 0.25s)
-        hihat = 0.0
-        for hihat_time in [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75]:
-            hihat_envelope = max(0.0, 1.0 - abs(beat_cycle - hihat_time) * 16.0)
-            hihat = max(hihat, hihat_envelope ** 2.5)
-        
-        # Bass line: low-frequency swell
-        bass = 0.5 + 0.5 * math.sin(t * 2.0 + math.pi)
-        bass = max(0.2, bass)
-        
-        # Mix everything: kick is most energetic, snare adds punch, hihat adds shimmer.
-        energy = 0.05 + kick * 0.45 + snare * 0.20 + hihat * 0.15 + bass * 0.15
+        # Only play dense drums for first 2 seconds of cycle, sparse for next 2 seconds.
+        if beat_cycle < 2.0:
+            # Kick drum: strong at 0.0, 0.5, 1.0, 1.5 seconds
+            kick = 0.0
+            for kick_time in [0.0, 0.5, 1.0, 1.5]:
+                kick_envelope = max(0.0, 1.0 - abs(beat_cycle - kick_time) * 6.0)
+                kick = max(kick, kick_envelope ** 2.0)
+            
+            # Snare: hits at 0.5, 1.5 (on the 2nd and 4th beat)
+            snare = 0.0
+            for snare_time in [0.5, 1.5]:
+                snare_envelope = max(0.0, 1.0 - abs(beat_cycle - snare_time) * 8.0)
+                snare = max(snare, snare_envelope ** 1.5)
+            
+            # Hi-hat: continuous sixteenth-note pattern (every 0.25s)
+            hihat = 0.0
+            for hihat_time in [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75]:
+                hihat_envelope = max(0.0, 1.0 - abs(beat_cycle - hihat_time) * 16.0)
+                hihat = max(hihat, hihat_envelope ** 2.5)
+            
+            # Bass line: low-frequency swell
+            bass = 0.5 + 0.5 * math.sin(beat_cycle * math.pi)
+            bass = max(0.3, bass)
+            
+            # Mix everything: kick is most energetic, snare adds punch, hihat adds shimmer.
+            energy = 0.08 + kick * 0.40 + snare * 0.18 + hihat * 0.12 + bass * 0.12
+        else:
+            # Sparse or silence: minimal energy, occasional hi-hat only
+            sparse_cycle = beat_cycle - 2.0
+            hihat = 0.0
+            for hihat_time in [0.3, 1.0, 1.7]:  # Sparse hi-hat hits
+                hihat_envelope = max(0.0, 1.0 - abs(sparse_cycle - hihat_time) * 8.0)
+                hihat = max(hihat, hihat_envelope ** 2.5)
+            energy = 0.02 + hihat * 0.06
         
         return clamp(energy, 0.0, 1.0)
 
@@ -194,15 +204,16 @@ class FerrofluidDancerDemo:
         t = self.sim_time
         self.audio_level = self._sim_audio_level(t)
 
-        # Magnetic attraction is audio-driven: strong during beats, nearly zero during silence.
-        audio_responsive_gain = self.audio_level ** 0.7  # Compress to make silence more pronounced
+        # Ferrofluid is EXTREMELY attracted to the magnet: it dances, not pools.
+        # Magnetic attraction stays strong unless in dead silence.
+        audio_responsive_gain = 0.4 + 0.6 * (self.audio_level ** 0.5)  # Min 0.4, max 1.0
         
         pulse = 0.5 + 0.5 * math.sin(t * 8.5)
         magnet_speed = (MAGNET_BASE_SPEED + MAGNET_PULSE_SPEED * pulse) * audio_responsive_gain
-        swirl_speed = SWIRL_SPEED * (0.2 + 0.8 * self.audio_level)
+        swirl_speed = SWIRL_SPEED * (0.3 + 0.7 * self.audio_level)
 
-        # Ferrofluid is heavy: rapid gravity pooling (faster than water).
-        gravity_speed = 6.5  # Sim units/s of downward drift (was 2.0)
+        # Light gravity: ferrofluid is heavy, but the magnet is much stronger.
+        gravity_speed = 1.2  # Reduced from 6.5; magnet overwhelms this
         
         # Bounded drift keeps motion stable and avoids solver tunneling.
         max_magnet_step = magnet_speed * dt
@@ -216,10 +227,10 @@ class FerrofluidDancerDemo:
             nx = dx / dist
             ny = dy / dist
 
-            # Gravity: always pull downward at a steady rate (heavier than water).
+            # Gravity: always present but weak (magnet dominates).
             self.py[i] += gravity_step
 
-            # Magnetic pull to center: stronger when audio is present, weak during silence.
+            # Magnetic pull to center: EXTREMELY strong, only weakens in true silence.
             far_gain = clamp(dist / max(self.radius * 0.7, 1.0), 0.2, 1.3)
             pull_step = max_magnet_step * far_gain
             self.px[i] -= nx * pull_step
@@ -227,18 +238,17 @@ class FerrofluidDancerDemo:
 
             # Spike formation during beats: particles at the surface get pushed outward
             # along the radial direction to form characteristic ferrofluid spikes.
-            spike_strength = (self.audio_level ** 1.5) * 1.2
+            spike_strength = (self.audio_level ** 1.5) * 1.5
             if dist > self.radius * 0.55:  # Only at fluid surface
-                spike_push = spike_strength * dt * 3.5
+                spike_push = spike_strength * dt * 4.0
                 self.px[i] += nx * spike_push
                 self.py[i] += ny * spike_push
 
-            # Add a dance swirl around center when audio is present.
-            if audio_responsive_gain > 0.1:
-                twirl = 0.55 + 0.45 * math.sin(t * 3.2 + dist * 0.24)
-                swirl = max_swirl_step * twirl
-                self.px[i] += -ny * swirl
-                self.py[i] += nx * swirl
+            # Add a dance swirl around center (always active when there's audio).
+            twirl = 0.55 + 0.45 * math.sin(t * 3.2 + dist * 0.24)
+            swirl = max_swirl_step * twirl
+            self.px[i] += -ny * swirl
+            self.py[i] += nx * swirl
 
     def step(self, dt):
         self.sim_time += dt
