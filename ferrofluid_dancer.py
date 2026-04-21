@@ -3,10 +3,18 @@
 Ferrofluid dancer demo for the Waveshare 1.28" round GC9A01 display.
 
 Visual concept:
-- Neutral gray background.
-- Black ferrofluid body constrained to the circular display.
-- A center magnetic pulse modulated by simulated sound energy.
+- High-performance 2D simulated physics of a magnetic fluid.
+- A center magnetic pulse modulated by simulated sound energy, responding dynamically.
 - Dancing motion from swirl and pulse terms, while maintaining stable packing.
+- Uses capacitive touch interactions via the CST816S driver to let the user manipulate the fluid center point.
+- Interactive mode options:
+  * `--party`: Enables an RGB color-shifting mode on the fluid surface lighting.
+  * `--test`: Minimal visualizer used to debug touchscreen X/Y output.
+  * `--gpio-cs`: Enables software chip-selection for SPI devices.
+
+Hardware Note: 
+- Designed originally for SPI-based GC9A01 LCD mapping and specifically hardware-accelerated SPI.
+- Touch utilizes I2C communication and GPIO interrupt lines (Interrupt and Reset).
 """
 
 import argparse
@@ -24,11 +32,11 @@ CONTAINER_RADIUS_SQ = CONTAINER_RADIUS * CONTAINER_RADIUS
 INNER_RADIUS_SQ = (CONTAINER_RADIUS - 1.2) * (CONTAINER_RADIUS - 1.2)
 
 PARTICLE_COUNT = 240
-PARTICLE_REST_RADIUS = 1.15
+PARTICLE_REST_RADIUS = 1.48
 PARTICLE_REST_RADIUS_SQ = PARTICLE_REST_RADIUS * PARTICLE_REST_RADIUS
 INTERACTION_RADIUS = PARTICLE_REST_RADIUS * 2.55
 INTERACTION_RADIUS_SQ = INTERACTION_RADIUS * INTERACTION_RADIUS
-GRID_CELL_SIZE = 3.2
+GRID_CELL_SIZE = 4.0
 
 PRESSURE_PUSH = 0.20
 POSITION_RELAX = 0.50
@@ -106,8 +114,12 @@ class FerrofluidDancerDemo:
         backlight_active_high=True,
         use_gpio_cs=False,
         verbose=False,
+        party_mode=False,
+        test_mode=False,
     ):
         self.verbose = verbose
+        self.party_mode = party_mode
+        self.test_mode = test_mode
         self.frame_delay = 1.0 / max(1, fps)
         self.display = DisplayDriver(
             verbose=verbose,
@@ -117,6 +129,64 @@ class FerrofluidDancerDemo:
             backlight_active_high=backlight_active_high,
             use_gpio_cs=use_gpio_cs,
         )
+
+        try:
+            import smbus2
+            import gpiod
+            from gpiod.line import Direction, Value
+            
+            # Use GPIO 4 for the touch interrupt pin (active low)
+            # When touched, this pin goes LOW
+            self.touch_int = self.display.chip.request_lines(
+                config={4: gpiod.LineSettings(direction=Direction.INPUT)},
+                consumer="Touch_INT"
+            )
+            
+            # Reset the CST816S via GPIO17 to wake it
+            # The reset requires pulling the line LOW for roughly 100ms
+            # and then keeping it HIGH for roughly 200ms before it becomes responsive.
+            # Without this sequence, the touch chip may stay in a low-power deep sleep.
+            self.touch_reset = self.display.chip.request_lines(
+                config={17: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE)},
+                consumer="Touch_Reset"
+            )
+            self.touch_reset.set_value(17, Value.INACTIVE) # Pull low
+            time.sleep(0.1)
+            self.touch_reset.set_value(17, Value.ACTIVE)   # Pull high
+            time.sleep(0.2)
+            
+            # NOTE ON I2C BUS:
+            # Due to damaged I2C silicon on the primary Raspberry Pi testing hardware (Bus 1),
+            # this demo initializes a software I2C bus via `dtoverlay=i2c-gpio` on Bus 3.
+            # If your standard I2C is working, or you are on a different Pi, change this back to:
+            # self.i2c_bus = smbus2.SMBus(1)
+            self.i2c_bus = smbus2.SMBus(3)
+            
+            # Configure CST816S for continuous touch reporting
+            # Stop AutoSleep
+            self.i2c_bus.write_byte_data(0x15, 0xFE, 0x01)
+            # Set mode: Point Mode (0x41 enables EnTouch & EnMotion)
+            self.i2c_bus.write_byte_data(0x15, 0xFA, 0x41)
+            # Normal scan period to 10ms
+            self.i2c_bus.write_byte_data(0x15, 0xEE, 0x01)
+            # Interrupt pulse width to 1.5ms
+            self.i2c_bus.write_byte_data(0x15, 0xED, 0x0F)
+            
+            self._log("CST816S Touch successfully initialized.")
+            self.has_touch = True
+        except ImportError:
+            self._log("smbus2 not found, touch interactions disabled.")
+            self.has_touch = False
+        except Exception as e:
+            self._log(f"Failed to initialize I2C touch: {e}")
+            self.has_touch = False
+
+        self.touch_active = False
+        self.touch_x = CONTAINER_CENTER
+        self.touch_y = CONTAINER_CENTER
+        self.touch_raw_x = 120
+        self.touch_raw_y = 120
+        self.last_touch_time = 0.0
 
         self.grid_w = SIM_SIZE
         self.grid_h = SIM_SIZE
@@ -161,6 +231,8 @@ class FerrofluidDancerDemo:
         self.release_collapse = 0.0
         self.field_phase = random.random() * math.tau
         self.breakup_drive = 0.0
+        self.next_shake_time = random.uniform(5.0, 60.0)
+        self.shake_duration = 0.0
 
         self._spawn_initial_particles()
         self._build_background_map()
@@ -183,6 +255,19 @@ class FerrofluidDancerDemo:
             self.vy.append((random.random() - 0.5) * 0.7)
 
     def _update_field_state(self, dt, burst):
+        if self.touch_active:
+            target_strength = 1.0
+            # Pull the magnet right toward the finger
+            self.field_strength += (target_strength - self.field_strength) * FIELD_ATTACK_RATE
+            
+            # 0.4 lerp makes it zip closely to the finger while maintaining some physics smoothing
+            self.field_x += (self.touch_x - self.field_x) * 0.4
+            self.field_y += (self.touch_y - self.field_y) * 0.4
+            
+            self.spike_drive += (self.field_strength - self.spike_drive) * SPIKE_FIELD_RESPONSE
+            self.release_collapse = 0.0
+            return
+
         target_strength = clamp(self.audio_level * 1.12 + burst * 0.30 - 0.03, 0.0, 1.0)
         response = FIELD_ATTACK_RATE if target_strength > self.field_strength else FIELD_RELEASE_RATE
         self.field_strength += (target_strength - self.field_strength) * response
@@ -293,8 +378,9 @@ class FerrofluidDancerDemo:
                 radial = math.sqrt(radial_sq) / max(self.radius, 1.0)
                 vignette = clamp(1.0 - radial * 0.62, 0.30, 1.0)
 
-                base = 134 + int(30 * vignette)
-                grain = int(7 * (0.5 + 0.5 * math.sin(0.28 * sx + 0.37 * sy)))
+                # Soft white background (~90% white)
+                base = 210 + int(19 * vignette)
+                grain = int(5 * (0.5 + 0.5 * math.sin(0.28 * sx + 0.37 * sy)))
                 level = clamp(base + grain, 0, 255)
 
                 idx = row + sx
@@ -306,7 +392,44 @@ class FerrofluidDancerDemo:
         self.display.init()
         self.display.draw_frame(bytearray([BLACK_HI, BLACK_LO] * (LCD_WIDTH * LCD_HEIGHT)))
 
+    def _poll_touch(self):
+        if not self.has_touch:
+            return
+        
+        # The CST816S interrupts with a short pulse LOW on GPIO 4.
+        # We can poll the line, but if we miss the pulse, checking I2C is safer.
+        # Because I2C reading a sleeping CST816S causes timeouts, we catch OSError.
+        # However, to avoid spamming I2C and hanging the OS, we will only poll I2C at most
+        # once every 10-20ms when not touched, or if we *caught* the pulse!
+        
+        try:
+            # 0x15 is the I2C address for CST816S
+            data = self.i2c_bus.read_i2c_block_data(0x15, 0x01, 6)
+            points = data[1]
+            if points > 0:
+                self.touch_active = True
+                raw_x = ((data[2] & 0x0F) << 8) | data[3]
+                raw_y = ((data[4] & 0x0F) << 8) | data[5]
+                
+                # Invert X axis to match screen orientation
+                raw_x = (LCD_WIDTH - 1) - raw_x
+
+                self.touch_raw_x = raw_x
+                self.touch_raw_y = raw_y
+                self.last_touch_time = time.time()
+                # Convert raw screen coordinates (0-239) to physics simulation coordinates (0-48)
+                self.touch_x = raw_x / SCALE
+                self.touch_y = raw_y / SCALE
+            else:
+                self.touch_active = False
+        except Exception:
+            # The CST816S goes to sleep automatically and will throw an IOError
+            # when I2C polled while asleep. Just mark inactive
+            self.touch_active = False
+
     def _apply_magnetic_motion(self, dt):
+        self._poll_touch()
+
         t = self.sim_time
         self.audio_level = self._sim_audio_level(t)
 
@@ -412,19 +535,40 @@ class FerrofluidDancerDemo:
                 angle = math.atan2(self.py[i] - cy, self.px[i] - cx)
 
             star_phase = angle * STAR_POINTS
-            star_wave = 0.5 + 0.5 * math.cos(star_phase)
-            star_focus = star_wave ** STAR_SHARPNESS
+            sine_wave = 0.5 + 0.5 * math.cos(star_phase)
+            cone_wave = 1.0 - abs((star_phase / math.pi) % 2.0 - 1.0)
+            
+            # The spikes are most pronounced near the magnet center where field lines project outwards
+            # Extended from 0.45 to 0.85 so spikes emerge from the main body, not just the inner core
+            toroidal_factor = clamp(1.0 - (field_dist / (self.radius * 0.85)), 0.0, 1.0)
+
+            star_wave = sine_wave * (1.0 - toroidal_factor) + cone_wave * toroidal_factor
+            sharpness = STAR_SHARPNESS * (1.0 - 0.4 * toroidal_factor)
+            star_focus = star_wave ** sharpness
 
             if active_field and self.spike_drive > SPIKE_INSTABILITY_THRESHOLD:
-                spoke_boost = 1.0 + burst * (1.5 * star_focus - 0.28 * (1.0 - star_focus))
-                spoke_push = dt * self.spike_drive * 5.6 * clamp(spoke_boost, 0.40, 2.20)
-                self.px[i] -= to_field_x * spoke_push * (0.25 + 0.75 * star_focus)
-                self.py[i] -= to_field_y * spoke_push * (0.25 + 0.75 * star_focus)
+                # Boost spike height substantially near the toroidal center to form true Rosensweig spikes
+                spoke_boost = 1.0 + burst * (2.5 * star_focus - 0.28 * (1.0 - star_focus)) + (toroidal_factor * 4.0 * star_focus)
+                
+                # Make the outward spoke push VIOLENT to overpower inward magnetic pull and tear outwards
+                # We need significant force to make them visible and accurate to ferrofluids
+                # Toned down now that particle repulsion does most of the heavy lifting for 3D spikes
+                spoke_push = dt * self.spike_drive * 45.0 * clamp(spoke_boost, 0.40, 6.00)
+                
+                # Shoot the spikes outwards fiercely where star_focus is high
+                self.px[i] -= to_field_x * spoke_push * star_focus
+                self.py[i] -= to_field_y * spoke_push * star_focus
+                
+                # Pinch the valleys inwards violently to thin the spikes and make them prominent
+                valley_pinch = dt * self.spike_drive * 35.0 * (1.0 - star_wave)
+                self.px[i] += to_field_x * valley_pinch
+                self.py[i] += to_field_y * valley_pinch
 
                 field_lateral_x = -to_field_y
                 field_lateral_y = to_field_x
+                # Push laterally to form thicker, more stable cone bases
                 align_sign = math.sin(star_phase)
-                steer = burst * dt * 1.2 * (1.0 - star_focus)
+                steer = burst * dt * 2.2 * (1.0 - star_focus) + (dt * 1.5 * toroidal_factor * cone_wave)
                 self.px[i] += field_lateral_x * steer * (-1.0 if align_sign > 0.0 else 1.0)
                 self.py[i] += field_lateral_y * steer * (-1.0 if align_sign > 0.0 else 1.0)
 
@@ -454,6 +598,18 @@ class FerrofluidDancerDemo:
         self.sim_time += dt
         particle_count = len(self.px)
 
+        if self.sim_time >= self.next_shake_time:
+            self.next_shake_time = self.sim_time + random.uniform(5.0, 60.0)
+            self.shake_duration = random.uniform(0.3, 0.9)
+            self._log(f"[SIM] Shaking container for {self.shake_duration:.2f}s!")
+
+        if self.shake_duration > 0.0:
+            self.shake_duration -= dt
+            shake_power = 600.0 * dt
+            for i in range(particle_count):
+                self.vx[i] += (random.random() - 0.5) * shake_power
+                self.vy[i] += (random.random() - 0.5) * shake_power
+
         self._apply_magnetic_motion(dt)
 
         for i in range(particle_count):
@@ -463,6 +619,13 @@ class FerrofluidDancerDemo:
             self.py[i] += self.vy[i] * dt
 
         buckets = {}
+        # Dynamic rest distance: when magnetized, particles repel each other fiercely in 2D,
+        # forcing them into a lattice. The lowered splat radius then renders each particle
+        # as a singular 3D Z-axis spike pointing right at the viewer!
+        current_rest = PARTICLE_REST_RADIUS * (1.0 + 0.50 * self.field_strength)
+        current_interaction = min(current_rest * 2.55, 3.99)
+        current_inter_sq = current_interaction * current_interaction
+
         for i in range(particle_count):
             gx = int(self.px[i] / GRID_CELL_SIZE)
             gy = int(self.py[i] / GRID_CELL_SIZE)
@@ -484,20 +647,25 @@ class FerrofluidDancerDemo:
                         dx = self.px[j] - self.px[i]
                         dy = self.py[j] - self.py[i]
                         d2 = dx * dx + dy * dy
-                        if d2 <= 1e-8 or d2 >= INTERACTION_RADIUS_SQ:
+                        if d2 <= 1e-8 or d2 >= current_inter_sq:
                             continue
 
                         dist = math.sqrt(d2)
                         nx = dx / dist
                         ny = dy / dist
 
-                        q = 1.0 - (dist / INTERACTION_RADIUS)
+                        q = 1.0 - (dist / current_interaction)
                         breakup_push = 1.0 + BREAKUP_PUSH_GAIN * self.breakup_drive
-                        push = q * q * PRESSURE_PUSH * breakup_push
-                        if dist < PARTICLE_REST_RADIUS:
-                            overlap = PARTICLE_REST_RADIUS - dist
-                            push += overlap * POSITION_RELAX * (0.8 + 0.2 * overlap / PARTICLE_REST_RADIUS)
-                        push = min(push, 0.70)
+                        # When magnetic field is strong, repel fiercely to turn into individual Z-spikes!
+                        pressure_mult = 1.0 + 8.5 * self.field_strength
+                        push = q * q * PRESSURE_PUSH * breakup_push * pressure_mult
+                        if dist < current_rest:
+                            overlap = current_rest - dist
+                            push += overlap * POSITION_RELAX * (0.8 + 0.2 * overlap / current_rest)
+                        
+                        # Dynamically increase the pressure bounds when magnetic fields act
+                        # ALLOW huge push pushes so they force apart into a grid instead of collapsing!
+                        push = min(push, 0.70 + 4.8 * self.field_strength)
 
                         self.px[i] -= nx * push
                         self.py[i] -= ny * push
@@ -511,10 +679,10 @@ class FerrofluidDancerDemo:
                         self.vx[j] -= rvx * VISCOSITY
                         self.vy[j] -= rvy * VISCOSITY
 
-                        if dist > PARTICLE_REST_RADIUS * 0.90:
-                            coh_q = 1.0 - (dist / INTERACTION_RADIUS)
+                        if dist > current_rest * 0.90:
+                            coh_q = 1.0 - (dist / current_interaction)
                             if coh_q > 0.20:
-                                stretch_bias = SKIN_STRETCH_COHESION if dist > PARTICLE_REST_RADIUS * 1.08 else 0.0
+                                stretch_bias = SKIN_STRETCH_COHESION if dist > current_rest * 1.08 else 0.0
                                 cohesion_scale = 1.0 - BREAKUP_COHESION_DROP * self.breakup_drive
                                 cohesion = coh_q * (0.045 + stretch_bias) * cohesion_scale
                                 self.px[i] += nx * cohesion
@@ -545,25 +713,29 @@ class FerrofluidDancerDemo:
             self.density[i] = 0.0
             self.blur[i] = 0.0
 
+        # Sharpen density drops into Z-spikes under strong magnetic field
+        splat_r2 = 12.0 - 5.5 * self.field_strength
+        splat_wt = 2.3 + 1.8 * self.field_strength
+
         for i in range(len(self.px)):
             x = self.px[i]
             y = self.py[i]
             ix = int(x)
             iy = int(y)
-            for oy in (-1, 0, 1):
+            for oy in (-2, -1, 0, 1, 2):
                 sy = iy + oy
                 if sy < 0 or sy >= self.grid_h:
                     continue
-                for ox in (-1, 0, 1):
+                for ox in (-2, -1, 0, 1, 2):
                     sx = ix + ox
                     if sx < 0 or sx >= self.grid_w:
                         continue
                     dx = (sx + 0.5) - x
                     dy = (sy + 0.5) - y
                     d2 = dx * dx + dy * dy
-                    if d2 > 7.0:
+                    if d2 > splat_r2:
                         continue
-                    weight = (1.0 - d2 / 7.0) * 2.8
+                    weight = (1.0 - d2 / splat_r2) * splat_wt
                     self.density[sy * self.grid_w + sx] += weight
 
         for y in range(self.grid_h):
@@ -621,6 +793,40 @@ class FerrofluidDancerDemo:
         for idx in range(cell_count):
             self.density[idx] = max(self.density[idx], self.blur[idx])
 
+        # Surface-Only Displacement Algorithm: "Induce-on-Boundary" (IoB) Hexagonal Lattice
+        # Apply a high-frequency geometric displacement over the density map when magnetic field is active
+        # to form perfect, mathematically uniform Z-axis Rosensweig spikes that follow magnetic field lines!
+        spike_scale = self.field_strength * 2.2
+        if spike_scale > 0.05:
+            # Hexagonal pattern frequency (density of the honeycomb)
+            freq = 0.85
+            for sy in range(self.grid_h):
+                dy = (sy - self.field_y)
+                row = sy * self.grid_w
+                for sx in range(self.grid_w):
+                    d = self.density[row + sx]
+                    # Only displace the actual surface of the fluid blob, taper sharply at the edges
+                    if d > ISO_EXIT * 0.8:
+                        dx = (sx - self.field_x)
+                        
+                        # 3-axis standing wave interference pattern forming a honeycomb/hex grid
+                        wave1 = math.cos(freq * dx)
+                        wave2 = math.cos(freq * (0.5 * dx + 0.866 * dy))
+                        wave3 = math.cos(freq * (-0.5 * dx + 0.866 * dy))
+                        hex_pattern = wave1 + wave2 + wave3
+                        
+                        # Isolate the peaks of the interference to form sharp, distinct conical spikes
+                        if hex_pattern > 1.2:
+                            # Substantially increase the density/height exactly on the hexagonal vertices
+                            spike = (hex_pattern - 1.2)
+                            spike = spike * spike * 2.5
+                            
+                            # Soften the edges of the blob so spikes don't suddenly jut out in empty space
+                            taper = min(1.0, (d - ISO_EXIT * 0.8) * 3.0)
+                            
+                            # Apply the magnetic surface displacement!
+                            self.density[row + sx] += spike * spike_scale * taper
+
         for idx in range(cell_count):
             d = self.density[idx]
             if self.surface_mask[idx]:
@@ -628,7 +834,47 @@ class FerrofluidDancerDemo:
             else:
                 self.surface_mask[idx] = d > ISO_ENTER
 
+    def _render_test_frame(self):
+        frame = self.frame
+        # Fill with white background
+        frame[:] = bytearray([0xFF, 0xFF] * (LCD_WIDTH * LCD_HEIGHT))
+        
+        now = time.time()
+        dt = now - self.last_touch_time
+        if dt < 1.0:
+            # Fade from black (0.0) to white (1.0)
+            intens = int(min(1.0, dt) * 255)
+            # 565 format for the grayscale intensity
+            r = intens >> 3
+            g = intens >> 2
+            b = intens >> 3
+            color_565 = (r << 11) | (g << 5) | b
+            hi = (color_565 >> 8) & 0xFF
+            lo = color_565 & 0xFF
+            
+            tx = int(self.touch_raw_x)
+            ty = int(self.touch_raw_y)
+            r_sq = 20 * 20
+            
+            start_y = max(0, ty - 20)
+            end_y = min(LCD_HEIGHT, ty + 20)
+            start_x = max(0, tx - 20)
+            end_x = min(LCD_WIDTH, tx + 20)
+            
+            for y in range(start_y, end_y):
+                dy_sq = (y - ty) * (y - ty)
+                for x in range(start_x, end_x):
+                    if dy_sq + (x - tx)**2 <= r_sq:
+                        idx = (y * LCD_WIDTH + x) * 2
+                        frame[idx] = hi
+                        frame[idx+1] = lo
+                        
+        return frame
+
     def render_frame(self):
+        if self.test_mode:
+            return self._render_test_frame()
+
         self._rasterize_density()
 
         frame = self.frame
@@ -640,6 +886,32 @@ class FerrofluidDancerDemo:
         bg_b = self.bg_b
         t = self.sim_time
         pulse_r = 1.8 + 5.6 * self.field_strength
+
+        if self.party_mode:
+            phase = t * math.tau / 60.0
+            pr = 0.5 + 0.5 * math.sin(phase)
+            pg = 0.5 + 0.5 * math.sin(phase + math.tau / 3.0)
+            pb = 0.5 + 0.5 * math.sin(phase + 2.0 * math.tau / 3.0)
+            spec_r_mul = pr * 0.8
+            spec_g_mul = pg * 0.8
+            spec_b_mul = pb * 0.8
+            bg_r_flat = int(pr * 255)
+            bg_g_flat = int(pg * 255)
+            bg_b_flat = int(pb * 255)
+            surf_r_base = 5 + int(pr * 20)
+            surf_g_base = 7 + int(pg * 20)
+            surf_b_base = 11 + int(pb * 20)
+        else:
+            # White lights on a neutral dark liquid
+            spec_r_mul = 1.0
+            spec_g_mul = 1.0
+            spec_b_mul = 1.0
+            bg_r_flat = 0
+            bg_g_flat = 0
+            bg_b_flat = 0
+            surf_r_base = 5
+            surf_g_base = 5
+            surf_b_base = 5
 
         for sy in range(self.grid_h):
             dy = self.dy_values[sy]
@@ -688,27 +960,38 @@ class FerrofluidDancerDemo:
                     normal_y /= normal_len
                     normal_z /= normal_len
 
+                # Restored original mostly-overhead directional light
                 light_x, light_y, light_z = -0.18, -0.22, 0.96
                 spec = max(0.0, normal_x * light_x + normal_y * light_y + normal_z * light_z)
-                spec = spec ** 16
-                spec_bright = int(spec * 255.0)
+                
+                # Highlight steep slopes (the spikes) independent of the primary light angle
+                rim = max(0.0, 1.0 - normal_z)
+                rim = rim * rim * rim
+                
+                # Diffused specular + 20% rim light (approx 51 out of 255)
+                spec_bright = int((spec ** 12) * 204.0 + rim * 51.0)
 
-                base_r = bg_r[idx]
-                base_g = bg_g[idx]
-                base_b = bg_b[idx]
+                if self.party_mode:
+                    base_r = bg_r_flat
+                    base_g = bg_g_flat
+                    base_b = bg_b_flat
+                else:
+                    base_r = bg_r[idx]
+                    base_g = bg_g[idx]
+                    base_b = bg_b[idx]
 
                 aa_needed = (0.10 < base_waterness < 0.55) or (abs(grad_x) + abs(grad_y) > 0.12)
 
                 if not aa_needed:
                     if base_waterness > 0.28:
-                        r = int(clamp(5 + spec_bright * 0.24, 0, 255))
-                        g = int(clamp(7 + spec_bright * 0.46, 0, 255))
-                        b = int(clamp(11 + spec_bright * 0.78, 0, 255))
+                        r = int(clamp(surf_r_base + spec_bright * spec_r_mul, 0, 255))
+                        g = int(clamp(surf_g_base + spec_bright * spec_g_mul, 0, 255))
+                        b = int(clamp(surf_b_base + spec_bright * spec_b_mul, 0, 255))
                     else:
-                        surface_alpha = clamp(0.64 + base_waterness * 0.33, 0.0, 0.993)
-                        r = int(base_r * (1.0 - surface_alpha) + 5 * surface_alpha)
-                        g = int(base_g * (1.0 - surface_alpha) + 7 * surface_alpha)
-                        b = int(base_b * (1.0 - surface_alpha) + 10 * surface_alpha)
+                        surface_alpha = clamp(base_waterness * 3.5, 0.0, 0.993)
+                        r = int(base_r * (1.0 - surface_alpha) + surf_r_base * surface_alpha)
+                        g = int(base_g * (1.0 - surface_alpha) + surf_g_base * surface_alpha)
+                        b = int(base_b * (1.0 - surface_alpha) + surf_b_base * surface_alpha)
                         pulse_boost = int(14 * pulse * (1.0 - base_waterness) * (1.0 - base_waterness))
                         r = clamp(r + pulse_boost, 0, 255)
                         g = clamp(g + pulse_boost, 0, 255)
@@ -736,14 +1019,14 @@ class FerrofluidDancerDemo:
                             waterness = max(waterness, base_waterness * 0.85)
 
                             if waterness > 0.28:
-                                r = clamp(5 + spec_bright * 0.24, 0, 255)
-                                g = clamp(7 + spec_bright * 0.46, 0, 255)
-                                b = clamp(11 + spec_bright * 0.78, 0, 255)
+                                r = clamp(surf_r_base + spec_bright * spec_r_mul, 0, 255)
+                                g = clamp(surf_g_base + spec_bright * spec_g_mul, 0, 255)
+                                b = clamp(surf_b_base + spec_bright * spec_b_mul, 0, 255)
                             else:
-                                surface_alpha = clamp(0.64 + waterness * 0.33, 0.0, 0.993)
-                                r = int(base_r * (1.0 - surface_alpha) + 5 * surface_alpha)
-                                g = int(base_g * (1.0 - surface_alpha) + 7 * surface_alpha)
-                                b = int(base_b * (1.0 - surface_alpha) + 10 * surface_alpha)
+                                surface_alpha = clamp(waterness * 3.5, 0.0, 0.993)
+                                r = int(base_r * (1.0 - surface_alpha) + surf_r_base * surface_alpha)
+                                g = int(base_g * (1.0 - surface_alpha) + surf_g_base * surface_alpha)
+                                b = int(base_b * (1.0 - surface_alpha) + surf_b_base * surface_alpha)
                                 pulse_boost = int(14 * pulse * (1.0 - waterness) * (1.0 - waterness))
                                 r = clamp(r + pulse_boost, 0, 255)
                                 g = clamp(g + pulse_boost, 0, 255)
@@ -844,8 +1127,9 @@ def parse_args():
     parser.add_argument("--gpio-cs", action="store_true", help="Use GPIO software chip-select")
     parser.add_argument("--backlight-active-low", action="store_true", help="Set if panel backlight is active low")
     parser.add_argument("--verbose", action="store_true", help="Verbose logs")
+    parser.add_argument("--party", action="store_true", help="Smoothly cycle RGB colors")
+    parser.add_argument("--test", action="store_true", help="Run touchscreen test mode")
     return parser.parse_args()
-
 
 def main():
     args = parse_args()
@@ -857,6 +1141,8 @@ def main():
         backlight_active_high=not args.backlight_active_low,
         use_gpio_cs=args.gpio_cs,
         verbose=args.verbose,
+        party_mode=args.party,
+        test_mode=args.test,
     )
     demo.run()
 

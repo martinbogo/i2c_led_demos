@@ -36,6 +36,18 @@ There are also Uno Q app folders for the dual-processor board ports:
 - `unoq_st_dashboard` - App Lab-native LCARS dashboard with MCU-side OLED rendering and Bridge-fed telemetry snapshots
 - `unoq_st_smartwatch` - App Lab-native LCARS smartwatch with MCU-side OLED rendering and Bridge-fed state updates
 
+
+## Python SPI Demos (GC9A01 & CST816S)
+
+In addition to the C OLED demos, this repository contains interactive Python demos built for the Waveshare 1.28" Round LCD (GC9A01 over SPI) with a capacitive touch overlay (CST816S over I2C). 
+
+Included Python demos:
+- `ferrofluid_dancer.py` - an interactive fluid physics sandbox where particles respond to simulated audio beats and touch input. Supports a full `--party` mode and `--test` visualizer mode.
+- `waves_and_water.py` - a fluid simulation demo with wave effects (originally built as an algorithmic exploration).
+- `badapple_waveshare.py` - a video rendering demo targeted for the color GC9A01 screen.
+
+**Note on Touch I2C**: On some Raspberry Pi configurations used for this project, the primary hardware I2C port was unresponsive (due to silicon damage). The touch interactions in `ferrofluid_dancer.py` were actively ported to a software I2C bus (`I2C Bus 3`) via the `dtoverlay=i2c-gpio` workaround. See the inline comments in the code if your I2C port is different.
+
 ## Display assumptions
 
 The demos target a 128x64 SSD1306 OLED connected over I2C at address `0x3C`.

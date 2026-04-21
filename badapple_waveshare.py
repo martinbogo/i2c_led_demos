@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
 Bad Apple video player for Waveshare 1.28" display
-Plays 1-bit monochrome video on GC9A01A display
+Plays 1-bit monochrome video on a GC9A01 over SPI.
+
+This script demonstrates video decoding directly in Python onto a generic framebuffer
+pushed aggressively out over a hardware SPI interface wrapper using spidev and gpiod.
 """
 
 import gpiod
