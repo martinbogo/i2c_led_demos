@@ -23,17 +23,17 @@ CONTAINER_RADIUS = SIM_SIZE * 0.5
 CONTAINER_RADIUS_SQ = CONTAINER_RADIUS * CONTAINER_RADIUS
 INNER_RADIUS_SQ = (CONTAINER_RADIUS - 1.2) * (CONTAINER_RADIUS - 1.2)
 
-PARTICLE_COUNT = 280
+PARTICLE_COUNT = 240
 PARTICLE_REST_RADIUS = 1.15
 PARTICLE_REST_RADIUS_SQ = PARTICLE_REST_RADIUS * PARTICLE_REST_RADIUS
-INTERACTION_RADIUS = PARTICLE_REST_RADIUS * 2.7
+INTERACTION_RADIUS = PARTICLE_REST_RADIUS * 2.55
 INTERACTION_RADIUS_SQ = INTERACTION_RADIUS * INTERACTION_RADIUS
 GRID_CELL_SIZE = 3.2
 
-PRESSURE_PUSH = 0.22
+PRESSURE_PUSH = 0.20
 POSITION_RELAX = 0.50
-VISCOSITY = 0.060
-VELOCITY_DAMPING = 0.955
+VISCOSITY = 0.055
+VELOCITY_DAMPING = 0.965
 WALL_BOUNCE = 0.25
 
 MAGNET_BASE_SPEED = 7.0
@@ -42,8 +42,8 @@ SWIRL_SPEED = 3.6
 STAR_POINTS = 8
 STAR_SHARPNESS = 16.0
 PEAK_SPIKE_RADIUS_RATIO = 0.50
-TARGET_FPS = 60
-PHYSICS_HZ = 30.0
+TARGET_FPS = 36
+PHYSICS_HZ = 24.0
 SPI_SPEED_HZ = 80000000
 
 BLACK_HI = 0x00
@@ -373,15 +373,16 @@ class FerrofluidDancerDemo:
                         self.vx[j] -= rvx * VISCOSITY
                         self.vy[j] -= rvy * VISCOSITY
 
-                        # Cohesion term: nearby particles lightly attract to keep
-                        # a continuous surface and suppress isolated "ball" look.
+                        # Lightweight cohesion to maintain a soft connected surface
+                        # without the expensive spring-like tension term.
                         if dist > PARTICLE_REST_RADIUS * 0.90:
                             coh_q = 1.0 - (dist / INTERACTION_RADIUS)
-                            cohesion = max(0.0, coh_q) ** 2 * 0.095
-                            self.px[i] += nx * cohesion
-                            self.py[i] += ny * cohesion
-                            self.px[j] -= nx * cohesion
-                            self.py[j] -= ny * cohesion
+                            if coh_q > 0.20:
+                                cohesion = coh_q * 0.045
+                                self.px[i] += nx * cohesion
+                                self.py[i] += ny * cohesion
+                                self.px[j] -= nx * cohesion
+                                self.py[j] -= ny * cohesion
 
         # Circular boundary constraint.
         for i in range(particle_count):
@@ -423,9 +424,9 @@ class FerrofluidDancerDemo:
                     dx = (sx + 0.5) - x
                     dy = (sy + 0.5) - y
                     d2 = dx * dx + dy * dy
-                    if d2 > 6.0:
+                    if d2 > 7.0:
                         continue
-                    weight = (1.0 - d2 / 6.0) * 2.5
+                    weight = (1.0 - d2 / 7.0) * 2.8
                     self.density[sy * self.grid_w + sx] += weight
 
         # Two blur passes.
@@ -466,24 +467,6 @@ class FerrofluidDancerDemo:
                 dn = self.blur[dn_row + x]
                 self.density[row + x] = (up + mid * 2.0 + dn) * 0.25
 
-        # Fourth blur pass for a stronger "skin" that hides individual particles.
-        for y in range(self.grid_h):
-            row = y * self.grid_w
-            for x in range(self.grid_w):
-                left = self.density[row + max(0, x - 1)]
-                mid = self.density[row + x]
-                right = self.density[row + min(self.grid_w - 1, x + 1)]
-                self.blur[row + x] = (left + mid * 2.0 + right) * 0.25
-
-        for y in range(self.grid_h):
-            row = y * self.grid_w
-            up_row = max(0, y - 1) * self.grid_w
-            dn_row = min(self.grid_h - 1, y + 1) * self.grid_w
-            for x in range(self.grid_w):
-                up = self.blur[up_row + x]
-                mid = self.blur[row + x]
-                dn = self.blur[dn_row + x]
-                self.density[row + x] = (up + mid * 2.0 + dn) * 0.25
 
     def render_frame(self):
         self._rasterize_density()
@@ -538,10 +521,10 @@ class FerrofluidDancerDemo:
                     pulse = math.exp(-((dist_center - pulse_r) * (dist_center - pulse_r)) / 16.0)
                     pulse *= 0.55 + 0.45 * math.sin(t * 12.0)
 
-                    waterness = smoothstep(0.005, 0.22, density)
+                    waterness = smoothstep(0.002, 0.19, density)
 
                     # Dense fluid: pure black base with bright specular highlights.
-                    if waterness > 0.4:
+                    if waterness > 0.28:
                         # Deep ferrofluid: render as dark with bright spec.
                         r = 8
                         g = 8
@@ -571,7 +554,7 @@ class FerrofluidDancerDemo:
                         base_g = bg_g[idx]
                         base_b = bg_b[idx]
 
-                        surface_alpha = clamp(0.55 + waterness * 0.40, 0.0, 0.99)
+                        surface_alpha = clamp(0.64 + waterness * 0.33, 0.0, 0.993)
                         fluid_r = 6
                         fluid_g = 6
                         fluid_b = 8
@@ -654,7 +637,7 @@ class FerrofluidDancerDemo:
 
                     next_frame = now + self.frame_delay
 
-                    if self.verbose and stats_frames >= 60:
+                    if self.verbose and stats_frames >= 30:
                         span = max(1e-6, now - stats_window_start)
                         fps = stats_frames / span
                         avg_step = (step_accum / stats_frames) * 1000.0
