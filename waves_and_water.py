@@ -26,23 +26,26 @@ CONTAINER_RADIUS = SIM_SIZE * 0.5
 CONTAINER_RADIUS_SQ = CONTAINER_RADIUS * CONTAINER_RADIUS
 INNER_RADIUS_SQ = (CONTAINER_RADIUS - 1.5) * (CONTAINER_RADIUS - 1.5)
 
-PARTICLE_COUNT = 180
-# Rest radius must satisfy: N * π * r² ≤ fill_area * 0.64 (random packing limit).
-# Lower-third fill area ≈ 1020 sim² → max N*π*r² ≈ 653.
-# 180 * π * 1.0² = 565 → packing fraction 55 %, safely below the limit.
+# Packing check: lower-third fill area ≈ 1010 sim².
+# Stable count at 55% packing = fill_area * 0.55 / (π * r²).
+# 175 * π * 1.0² = 550 → packing fraction 54 %. Good.
+PARTICLE_COUNT = 175
 PARTICLE_REST_RADIUS = 1.0
 PARTICLE_REST_RADIUS_SQ = PARTICLE_REST_RADIUS * PARTICLE_REST_RADIUS
-# GRID_CELL_SIZE must be ≥ INTERACTION_RADIUS so the 3×3 bucket search is complete.
-INTERACTION_RADIUS = PARTICLE_REST_RADIUS * 2.5   # = 2.5 sim units
+# GRID_CELL_SIZE must be > INTERACTION_RADIUS so the 3×3 bucket search is complete.
+INTERACTION_RADIUS = PARTICLE_REST_RADIUS * 3.0   # = 3.0 sim units
 INTERACTION_RADIUS_SQ = INTERACTION_RADIUS * INTERACTION_RADIUS
-GRID_CELL_SIZE = 2.6   # just above INTERACTION_RADIUS
-GRAVITY_ACCEL = 7.0
-VELOCITY_DAMPING = 0.988
-WALL_BOUNCE = 0.28
-VISCOSITY = 0.010
-POSITION_RELAX = 0.38
+GRID_CELL_SIZE = 3.1   # just above INTERACTION_RADIUS
+# Gravity is applied as a direct position bias per step — NOT through velocity.
+# This prevents velocity from accumulating to tunneling speeds and makes the
+# simulation frame-rate independent. Velocity is reserved for slosh impulses only.
+GRAVITY_SPEED = 5.0   # sim_units/s maximum gravity-driven drift
+VELOCITY_DAMPING = 0.93   # quick slosh decay; roughly halves per 0.25 s at 30 fps
+WALL_BOUNCE = 0.40
+VISCOSITY = 0.015
+POSITION_RELAX = 0.45
 SURFACE_TENSION = 0.00035
-PRESSURE_PUSH = 0.09
+PRESSURE_PUSH = 0.28
 TARGET_FPS = 60
 PHYSICS_HZ = 30.0
 DEFAULT_WATER_SPI_SPEED = 80000000
@@ -141,13 +144,15 @@ class WavesAndWaterDemo:
         self.gravity_target_y = math.sin(angle)
         self.gravity_timer = random.uniform(3.0, 12.0)
 
-        # Add a mild coherent impulse so the fluid sloshes as a body.
+        # Strong coherent velocity impulse so the fluid visibly sloshes.
+        # Velocity damps quickly (VELOCITY_DAMPING^~8 steps ≈ 0.5) so the
+        # energy dissipates naturally without causing long-term tunneling.
         if not initial:
             delta_gx = self.gravity_target_x - prev_gx
             delta_gy = self.gravity_target_y - prev_gy
             turn_mag = min(1.0, math.hypot(delta_gx, delta_gy))
-            dir_impulse = 0.25 + 0.20 * turn_mag
-            swirl_impulse = 0.18 + 0.12 * turn_mag
+            dir_impulse = 4.0 + 3.0 * turn_mag
+            swirl_impulse = 2.5 + 2.0 * turn_mag
             for i in range(len(self.px)):
                 rx = self.px[i] - self.center
                 ry = self.py[i] - self.center
@@ -185,8 +190,8 @@ class WavesAndWaterDemo:
 
         particle_count = len(self.px)
 
-        # Smoothly rotate toward the next gravity direction (slow blend = gradual tilt feel).
-        blend = min(1.0, dt * 0.7)
+        # Smoothly rotate toward the next gravity direction.
+        blend = min(1.0, dt * 1.2)
         self.gravity_x += (self.gravity_target_x - self.gravity_x) * blend
         self.gravity_y += (self.gravity_target_y - self.gravity_y) * blend
         g_len = math.hypot(self.gravity_x, self.gravity_y)
@@ -194,16 +199,18 @@ class WavesAndWaterDemo:
             self.gravity_x /= g_len
             self.gravity_y /= g_len
 
-        dt60 = dt * PHYSICS_HZ
+        # Gravity as a BOUNDED position bias rather than accumulated velocity.
+        # Each step moves particles at most GRAVITY_SPEED * dt in the gravity
+        # direction — independent of how many frames have elapsed.  Velocity is
+        # used only for slosh impulses and dissipates quickly.
+        grav_dx = self.gravity_x * GRAVITY_SPEED * dt
+        grav_dy = self.gravity_y * GRAVITY_SPEED * dt
 
         for i in range(particle_count):
-            self.vx[i] += self.gravity_x * GRAVITY_ACCEL * dt
-            self.vy[i] += self.gravity_y * GRAVITY_ACCEL * dt
             self.vx[i] *= VELOCITY_DAMPING
             self.vy[i] *= VELOCITY_DAMPING
-
-            self.px[i] += self.vx[i] * dt60
-            self.py[i] += self.vy[i] * dt60
+            self.px[i] += grav_dx + self.vx[i] * dt
+            self.py[i] += grav_dy + self.vy[i] * dt
 
         # Spatial hash for local interactions.
         buckets = {}
