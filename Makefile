@@ -24,25 +24,31 @@ endif
 
 SIZE_EXTRA_LDFLAGS = -flto
 
-# Identify all loose C system modules (excluding special targets)
-SRCS = $(filter-out test_lcd_gc9a01.c badapple_waveshare.c, $(wildcard *.c))
+# Identify all loose C system modules (excluding special targets and libraries without main)
+PI_SRCS = $(filter-out badapple_waveshare.c hal_gpio_spi.c lcd_gc9a01.c, $(wildcard *.c))
+PI_BINS = $(PI_SRCS:.c=)
+
+# Uno Q Host payloads
+UNOQ_SRCS = unoq_st_dashboard/host/st_dashboard_stream.c unoq_st_smartwatch/host/st_smartwatch_stream.c
+UNOQ_BINS = $(UNOQ_SRCS:.c=)
+
+ALL_BINS = $(PI_BINS) $(UNOQ_BINS) badapple_waveshare
 
 # Auto-generate matching target binaries
-BINS = $(SRCS:.c=)
 DEP_DIR = .deps
 
 ifeq ($(strip $(MAKECMDGOALS)),)
-DEP_TARGETS = $(BINS)
+DEP_TARGETS = $(ALL_BINS)
 else ifneq ($(filter clean,$(MAKECMDGOALS)),)
 DEP_TARGETS =
 else
-DEP_TARGETS = $(filter $(BINS),$(MAKECMDGOALS))
+DEP_TARGETS = $(filter $(ALL_BINS),$(MAKECMDGOALS))
 endif
 
 DEPS = $(patsubst %,$(DEP_DIR)/%.d,$(DEP_TARGETS))
 
 .DEFAULT_GOAL := all
-.PHONY: all clean FORCE
+.PHONY: all pi unoq clean FORCE
 
 i2c_oled_demo: CFLAGS := $(SIZE_CFLAGS)
 i2c_oled_demo: LDFLAGS += $(SIZE_LDFLAGS)
@@ -52,17 +58,10 @@ elevated: LDFLAGS += $(SIZE_LDFLAGS) $(SIZE_EXTRA_LDFLAGS) $(SIZE_ELF_EXTRA_LDFL
 elevated: LDLIBS := -lm
 elevated: $(OLED_LUT_HEADER)
 
-# Waveshare 1.28" OLED Display Test
-test_lcd_gc9a01: hal_gpio_spi.o lcd_gc9a01.o test_lcd_gc9a01.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
-
 hal_gpio_spi.o: hal_gpio_spi.c hal_gpio_spi.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 lcd_gc9a01.o: lcd_gc9a01.c lcd_gc9a01.h gpio_config.h hal_gpio_spi.h
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-test_lcd_gc9a01.o: test_lcd_gc9a01.c lcd_gc9a01.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Waveshare Bad Apple Demo
@@ -72,12 +71,17 @@ badapple_waveshare: hal_gpio_spi.o lcd_gc9a01.o badapple_waveshare.o
 badapple_waveshare.o: badapple_waveshare.c lcd_gc9a01.h gpio_config.h hal_gpio_spi.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-all: $(BINS)
+all: pi unoq
+
+pi: $(PI_BINS) badapple_waveshare
+
+unoq: $(UNOQ_BINS)
 
 $(DEP_DIR):
 	mkdir -p $@
 
 $(DEP_DIR)/%.d: %.c | $(DEP_DIR)
+	@mkdir -p $(dir $@)
 	@$(CC) $(CFLAGS) -MM -MP -MF $@ -MT $* $<
 
 $(OLED_LUT_HEADER): $(OLED_LUT_GENERATOR) FORCE
@@ -87,7 +91,13 @@ $(OLED_LUT_HEADER): $(OLED_LUT_GENERATOR) FORCE
 %: %.c $(DEP_DIR)/%.d
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
+unoq_st_dashboard/host/%: unoq_st_dashboard/host/%.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
+
+unoq_st_smartwatch/host/%: unoq_st_smartwatch/host/%.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
+
 clean:
-	rm -rf $(BINS) $(DEP_DIR) $(OLED_LUT_HEADER) *.o test_lcd_gc9a01 badapple_waveshare
+	rm -rf $(ALL_BINS) $(DEP_DIR) $(OLED_LUT_HEADER) *.o badapple_waveshare
 
 -include $(DEPS)
