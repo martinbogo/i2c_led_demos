@@ -39,6 +39,8 @@ WALL_BOUNCE = 0.25
 MAGNET_BASE_SPEED = 7.0
 MAGNET_PULSE_SPEED = 22.0
 SWIRL_SPEED = 3.6
+STAR_POINTS = 12
+STAR_SHARPNESS = 16.0
 TARGET_FPS = 60
 PHYSICS_HZ = 30.0
 SPI_SPEED_HZ = 80000000
@@ -255,12 +257,34 @@ class FerrofluidDancerDemo:
                 self.px[i] += nx * spike_push
                 self.py[i] += ny * spike_push
 
-            # Beat burst: split body into lobes, then collapse back on off-beat.
+            # 12-point star pull like clock marks: lock fluid into sharp spokes.
             angle = math.atan2(dy, dx)
-            lobe = math.sin(angle * 6.0 + t * 4.5)
-            burst_push = burst * dt * 8.5 * lobe
-            self.px[i] += nx * burst_push
-            self.py[i] += ny * burst_push
+            star_phase = angle * STAR_POINTS
+            star_wave = 0.5 + 0.5 * math.cos(star_phase)
+            star_focus = star_wave ** STAR_SHARPNESS
+
+            # Radial extension on spoke directions during bursts.
+            spoke_push = burst * dt * 18.0 * star_focus
+            if dist > self.radius * 0.28:
+                self.px[i] += nx * spoke_push
+                self.py[i] += ny * spoke_push
+
+            # Off-spoke suppression keeps valleys between spikes clean and sharp.
+            valley_pull = burst * dt * 7.5 * (1.0 - star_focus)
+            self.px[i] -= nx * valley_pull
+            self.py[i] -= ny * valley_pull
+
+            # Tangential steering snaps particles toward nearest spoke angle.
+            tx = -ny
+            ty = nx
+            align_sign = math.sin(star_phase)
+            steer = burst * dt * 6.0 * (1.0 - star_focus)
+            if align_sign > 0.0:
+                self.px[i] -= tx * steer
+                self.py[i] -= ty * steer
+            else:
+                self.px[i] += tx * steer
+                self.py[i] += ty * steer
 
             # Quiet phase cohesion: metaball-like recombination toward centroid.
             merge_gain = (1.0 - burst) * (0.35 + 0.65 * (1.0 - self.audio_level))
