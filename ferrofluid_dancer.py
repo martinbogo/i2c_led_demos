@@ -41,6 +41,7 @@ MAGNET_PULSE_SPEED = 22.0
 SWIRL_SPEED = 3.6
 STAR_POINTS = 12
 STAR_SHARPNESS = 16.0
+PEAK_SPIKE_RADIUS_RATIO = 0.80
 TARGET_FPS = 60
 PHYSICS_HZ = 30.0
 SPI_SPEED_HZ = 80000000
@@ -268,6 +269,16 @@ class FerrofluidDancerDemo:
             if dist > self.radius * 0.28:
                 self.px[i] += nx * spoke_push
                 self.py[i] += ny * spoke_push
+
+            # Peak beat targeting: during strongest bursts, spokes reach ~80% radius.
+            peak_gate = clamp((burst - 0.62) / 0.38, 0.0, 1.0)
+            target_radius = self.radius * PEAK_SPIKE_RADIUS_RATIO
+            radius_error = target_radius - dist
+            if star_focus > 0.22 and peak_gate > 0.0:
+                # Push outward when below target, lightly pull back when overshooting.
+                target_drive = dt * peak_gate * star_focus * 14.0
+                self.px[i] += nx * radius_error * target_drive
+                self.py[i] += ny * radius_error * target_drive
 
             # Off-spoke suppression keeps valleys between spikes clean and sharp.
             valley_pull = burst * dt * 7.5 * (1.0 - star_focus)
