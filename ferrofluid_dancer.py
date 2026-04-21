@@ -349,7 +349,12 @@ class FerrofluidDancerDemo:
                 base_x = self.base_x_values[sx]
                 radial_sq = dx * dx + dy * dy
 
-                if radial_sq > self.radius_sq:
+                # Compute distance to circle for antialiasing edge pixels.
+                radial = math.sqrt(radial_sq) if radial_sq > 1e-6 else 0.0
+                edge_blend = 1.0 if radial <= self.radius - 2.0 else smoothstep(self.radius + 1.5, self.radius - 2.0, radial)
+
+                if edge_blend < 0.01:
+                    # Fully outside: black.
                     hi = BLACK_HI
                     lo = BLACK_LO
                 else:
@@ -366,40 +371,66 @@ class FerrofluidDancerDemo:
                     grad_y = density_d - density_u
                     slope = abs(grad_x) + abs(grad_y)
 
-                    # Simulated magnetic pulse glow around center (subtle, gray).
+                    # Magnetic pulse glow.
                     dist_center = math.sqrt(dx * dx + dy * dy)
                     pulse = math.exp(-((dist_center - pulse_r) * (dist_center - pulse_r)) / 16.0)
                     pulse *= 0.55 + 0.45 * math.sin(t * 12.0)
 
                     waterness = smoothstep(0.04, 0.52, density)
-                    # Fluid should read as black on a gray stage, so use a strong
-                    # subtractive darkening model rather than additive tinting.
-                    surface_alpha = clamp(0.35 + waterness * 0.62, 0.0, 0.985)
 
-                    base_r = bg_r[idx]
-                    base_g = bg_g[idx]
-                    base_b = bg_b[idx]
+                    # Dense fluid: pure black base with bright specular highlights.
+                    if waterness > 0.6:
+                        # Deep ferrofluid: render as dark with bright spec.
+                        r = 8
+                        g = 8
+                        b = 10
 
-                    # Keep the core nearly black; only very subtle edge sheen.
-                    fluid_r = clamp(int(9 - waterness * 6), 2, 10)
-                    fluid_g = clamp(int(9 - waterness * 6), 2, 10)
-                    fluid_b = clamp(int(10 - waterness * 6), 2, 11)
+                        # Normal vector from density gradient.
+                        normal_x = -grad_x * 0.7
+                        normal_y = -grad_y * 0.7
+                        normal_z = 1.0
+                        normal_len = math.sqrt(normal_x * normal_x + normal_y * normal_y + normal_z * normal_z)
+                        if normal_len > 1e-6:
+                            normal_x /= normal_len
+                            normal_y /= normal_len
+                            normal_z /= normal_len
 
-                    r = int(base_r * (1.0 - surface_alpha) + fluid_r * surface_alpha)
-                    g = int(base_g * (1.0 - surface_alpha) + fluid_g * surface_alpha)
-                    b = int(base_b * (1.0 - surface_alpha) + fluid_b * surface_alpha)
+                        # Bright specular highlight: light from top-left-front.
+                        light_x, light_y, light_z = -0.40, -0.45, 0.80
+                        spec = max(0.0, normal_x * light_x + normal_y * light_y + normal_z * light_z)
+                        spec = spec ** 16
+                        spec_bright = int(spec * 255.0)
+                        r = clamp(r + spec_bright * 0.25, 0, 255)
+                        g = clamp(g + spec_bright * 0.50, 0, 255)
+                        b = clamp(b + spec_bright * 0.75, 0, 255)
+                    else:
+                        # Near-fluid or background: blend normally.
+                        base_r = bg_r[idx]
+                        base_g = bg_g[idx]
+                        base_b = bg_b[idx]
 
-                    # Edge sheen: visible contour, but never white.
-                    rim = clamp(slope * 9.0, 0.0, 9.0)
-                    r = clamp(int(r + rim * 0.20), 0, 255)
-                    g = clamp(int(g + rim * 0.20), 0, 255)
-                    b = clamp(int(b + rim * 0.20), 0, 255)
+                        surface_alpha = clamp(0.25 + waterness * 0.50, 0.0, 0.95)
+                        fluid_r = 6
+                        fluid_g = 6
+                        fluid_b = 8
 
-                    # Pulse mostly affects background and near-fluid fringe only.
-                    pulse_boost = int(11 * pulse * (1.0 - waterness) * (1.0 - waterness))
-                    r = clamp(r + pulse_boost, 0, 255)
-                    g = clamp(g + pulse_boost, 0, 255)
-                    b = clamp(b + pulse_boost, 0, 255)
+                        r = int(base_r * (1.0 - surface_alpha) + fluid_r * surface_alpha)
+                        g = int(base_g * (1.0 - surface_alpha) + fluid_g * surface_alpha)
+                        b = int(base_b * (1.0 - surface_alpha) + fluid_b * surface_alpha)
+
+                        # Pulse mostly at background.
+                        pulse_boost = int(14 * pulse * (1.0 - waterness) * (1.0 - waterness))
+                        r = clamp(r + pulse_boost, 0, 255)
+                        g = clamp(g + pulse_boost, 0, 255)
+                        b = clamp(b + pulse_boost, 0, 255)
+
+                    # Apply edge blending for antialiasing.
+                    bg_r_edge = bg_r[idx]
+                    bg_g_edge = bg_g[idx]
+                    bg_b_edge = bg_b[idx]
+                    r = int(r * edge_blend + bg_r_edge * (1.0 - edge_blend))
+                    g = int(g * edge_blend + bg_g_edge * (1.0 - edge_blend))
+                    b = int(b * edge_blend + bg_b_edge * (1.0 - edge_blend))
 
                     color565 = pack_panel_color(r, g, b)
                     hi = (color565 >> 8) & 0xFF
