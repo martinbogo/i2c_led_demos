@@ -42,6 +42,8 @@ SWIRL_SPEED = 3.6
 STAR_POINTS = 8
 STAR_SHARPNESS = 16.0
 PEAK_SPIKE_RADIUS_RATIO = 0.50
+ISO_ENTER = 0.22
+ISO_EXIT = 0.16
 TARGET_FPS = 36
 PHYSICS_HZ = 24.0
 SPI_SPEED_HZ = 80000000
@@ -102,6 +104,7 @@ class FerrofluidDancerDemo:
 
         self.density = [0.0] * (self.grid_w * self.grid_h)
         self.blur = [0.0] * (self.grid_w * self.grid_h)
+        self.surface_mask = [False] * (self.grid_w * self.grid_h)
         self.frame = bytearray(LCD_WIDTH * LCD_HEIGHT * 2)
         self.scaled_row = bytearray(LCD_WIDTH * 2)
 
@@ -290,11 +293,9 @@ class FerrofluidDancerDemo:
             # Gravity: always present but weak (magnet dominates).
             self.py[i] += gravity_step
 
-            # Magnetic pull to center: EXTREMELY strong, only weakens in true silence.
+            # Magnetic pull to center: baseline term, further modulated by spoke field.
             far_gain = clamp(dist / max(self.radius * 0.7, 1.0), 0.2, 1.3)
             pull_step = max_magnet_step * far_gain
-            self.px[i] -= nx * pull_step
-            self.py[i] -= ny * pull_step
 
             # Spike formation during beats: forceful outward ejection at surface.
             spike_strength = (self.audio_level ** 1.05) * 5.8
@@ -303,15 +304,21 @@ class FerrofluidDancerDemo:
                 self.px[i] += nx * spike_push
                 self.py[i] += ny * spike_push
 
-            # 12-point star pull like clock marks: lock fluid into sharp spokes.
+            # 8-point spoke field: modulates magnetic gradient instead of applying
+            # hard geometric pushes, which is more stable and fluid-like.
             angle = math.atan2(dy, dx)
             star_phase = angle * STAR_POINTS
             star_wave = 0.5 + 0.5 * math.cos(star_phase)
             star_focus = star_wave ** STAR_SHARPNESS
 
-            # Radial extension on spoke directions during bursts.
-            spoke_push = burst * dt * 18.0 * star_focus
-            if dist > self.radius * 0.28:
+            spoke_boost = 1.0 + burst * (1.8 * star_focus - 0.35 * (1.0 - star_focus))
+            spoke_pull = pull_step * clamp(spoke_boost, 0.65, 2.6)
+            self.px[i] -= nx * spoke_pull
+            self.py[i] -= ny * spoke_pull
+
+            # Small spoke tip growth only near surface to emulate instability peaks.
+            if dist > self.radius * 0.46:
+                spoke_push = burst * dt * 7.5 * (star_focus ** 0.6)
                 self.px[i] += nx * spoke_push
                 self.py[i] += ny * spoke_push
 
@@ -325,22 +332,13 @@ class FerrofluidDancerDemo:
                 self.px[i] += nx * radius_error * target_drive
                 self.py[i] += ny * radius_error * target_drive
 
-            # Off-spoke suppression keeps valleys between spikes clean and sharp.
-            valley_pull = burst * dt * 7.5 * (1.0 - star_focus)
-            self.px[i] -= nx * valley_pull
-            self.py[i] -= ny * valley_pull
-
-            # Tangential steering snaps particles toward nearest spoke angle.
+            # Gentle tangential steering keeps spoke tips coherent without rigid pinching.
             tx = -ny
             ty = nx
             align_sign = math.sin(star_phase)
-            steer = burst * dt * 6.0 * (1.0 - star_focus)
-            if align_sign > 0.0:
-                self.px[i] -= tx * steer
-                self.py[i] -= ty * steer
-            else:
-                self.px[i] += tx * steer
-                self.py[i] += ty * steer
+            steer = burst * dt * 1.6 * (1.0 - star_focus)
+            self.px[i] += tx * steer * (-1.0 if align_sign > 0.0 else 1.0)
+            self.py[i] += ty * steer * (-1.0 if align_sign > 0.0 else 1.0)
 
             # Quiet phase cohesion: metaball-like recombination toward centroid.
             merge_gain = (1.0 - burst) * (0.35 + 0.65 * (1.0 - self.audio_level))
@@ -512,6 +510,14 @@ class FerrofluidDancerDemo:
                 dn = self.blur[dn_row + x]
                 self.density[row + x] = (up + mid * 2.0 + dn) * 0.25
 
+        # Hysteresis classification for stable isosurface (reduces popping/flicker).
+        for idx in range(cell_count):
+            d = self.density[idx]
+            if self.surface_mask[idx]:
+                self.surface_mask[idx] = d > ISO_EXIT
+            else:
+                self.surface_mask[idx] = d > ISO_ENTER
+
 
     def render_frame(self):
         self._rasterize_density()
@@ -550,6 +556,7 @@ class FerrofluidDancerDemo:
                 else:
                     idx = density_row + sx
                     density = density_map[idx]
+                    is_fluid = self.surface_mask[idx]
 
                     sx_l = sx - 1 if sx > 0 else 0
                     sx_r = sx + 1 if sx < self.grid_w - 1 else self.grid_w - 1
@@ -567,6 +574,10 @@ class FerrofluidDancerDemo:
                     pulse *= 0.55 + 0.45 * math.sin(t * 12.0)
 
                     waterness = smoothstep(0.002, 0.19, density)
+                    if is_fluid:
+                        waterness = max(waterness, 0.42)
+                    else:
+                        waterness *= 0.68
 
                     # Dense fluid: pure black base with bright specular highlights.
                     if waterness > 0.28:
