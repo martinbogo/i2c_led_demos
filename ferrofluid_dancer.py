@@ -372,29 +372,31 @@ class FerrofluidDancerDemo:
                     pulse *= 0.55 + 0.45 * math.sin(t * 12.0)
 
                     waterness = smoothstep(0.04, 0.52, density)
-                    surface_alpha = clamp(0.20 + waterness * 0.78, 0.0, 0.97)
+                    # Fluid should read as black on a gray stage, so use a strong
+                    # subtractive darkening model rather than additive tinting.
+                    surface_alpha = clamp(0.35 + waterness * 0.62, 0.0, 0.985)
 
                     base_r = bg_r[idx]
                     base_g = bg_g[idx]
                     base_b = bg_b[idx]
 
-                    # Dark ferrofluid body color with slight metallic highlights.
-                    fluid_r = clamp(int(20 - waterness * 13), 5, 24)
-                    fluid_g = clamp(int(21 - waterness * 13), 5, 24)
-                    fluid_b = clamp(int(22 - waterness * 13), 5, 24)
+                    # Keep the core nearly black; only very subtle edge sheen.
+                    fluid_r = clamp(int(9 - waterness * 6), 2, 10)
+                    fluid_g = clamp(int(9 - waterness * 6), 2, 10)
+                    fluid_b = clamp(int(10 - waterness * 6), 2, 11)
 
                     r = int(base_r * (1.0 - surface_alpha) + fluid_r * surface_alpha)
                     g = int(base_g * (1.0 - surface_alpha) + fluid_g * surface_alpha)
                     b = int(base_b * (1.0 - surface_alpha) + fluid_b * surface_alpha)
 
-                    # Rim highlight from density gradient.
-                    rim = clamp(slope * 26.0, 0.0, 26.0)
-                    r = clamp(int(r + rim * 0.35), 0, 255)
-                    g = clamp(int(g + rim * 0.35), 0, 255)
-                    b = clamp(int(b + rim * 0.35), 0, 255)
+                    # Edge sheen: visible contour, but never white.
+                    rim = clamp(slope * 9.0, 0.0, 9.0)
+                    r = clamp(int(r + rim * 0.20), 0, 255)
+                    g = clamp(int(g + rim * 0.20), 0, 255)
+                    b = clamp(int(b + rim * 0.20), 0, 255)
 
-                    # Magnetic pulse contribution to nearby background.
-                    pulse_boost = int(18 * pulse * (1.0 - waterness * 0.5))
+                    # Pulse mostly affects background and near-fluid fringe only.
+                    pulse_boost = int(11 * pulse * (1.0 - waterness) * (1.0 - waterness))
                     r = clamp(r + pulse_boost, 0, 255)
                     g = clamp(g + pulse_boost, 0, 255)
                     b = clamp(b + pulse_boost, 0, 255)
