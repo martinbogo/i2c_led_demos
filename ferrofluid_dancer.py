@@ -36,9 +36,9 @@ VISCOSITY = 0.020
 VELOCITY_DAMPING = 0.935
 WALL_BOUNCE = 0.25
 
-MAGNET_BASE_SPEED = 6.0
-MAGNET_PULSE_SPEED = 16.0
-SWIRL_SPEED = 3.0
+MAGNET_BASE_SPEED = 7.0
+MAGNET_PULSE_SPEED = 22.0
+SWIRL_SPEED = 3.6
 TARGET_FPS = 60
 PHYSICS_HZ = 30.0
 SPI_SPEED_HZ = 80000000
@@ -208,9 +208,21 @@ class FerrofluidDancerDemo:
         # Magnetic attraction stays strong unless in dead silence.
         audio_responsive_gain = 0.4 + 0.6 * (self.audio_level ** 0.5)  # Min 0.4, max 1.0
         
-        pulse = 0.5 + 0.5 * math.sin(t * 8.5)
+        pulse = 0.5 + 0.5 * math.sin(t * 10.5)
         magnet_speed = (MAGNET_BASE_SPEED + MAGNET_PULSE_SPEED * pulse) * audio_responsive_gain
         swirl_speed = SWIRL_SPEED * (0.3 + 0.7 * self.audio_level)
+
+        # Beat burst envelope for visible spike ejection and metaball-style split/recombine.
+        beat_cycle = t % 4.0
+        burst = 0.0
+        if beat_cycle < 2.0:
+            for hit_time in (0.0, 0.5, 1.0, 1.5):
+                env = max(0.0, 1.0 - abs(beat_cycle - hit_time) * 10.0)
+                burst = max(burst, env * env)
+
+        # Compute centroid so quiet phases strongly re-merge droplets.
+        cx = sum(self.px) / max(1, len(self.px))
+        cy = sum(self.py) / max(1, len(self.py))
 
         # Light gravity: ferrofluid is heavy, but the magnet is much stronger.
         gravity_speed = 1.2  # Reduced from 6.5; magnet overwhelms this
@@ -236,13 +248,27 @@ class FerrofluidDancerDemo:
             self.px[i] -= nx * pull_step
             self.py[i] -= ny * pull_step
 
-            # Spike formation during beats: particles at the surface get pushed outward
-            # along the radial direction to form characteristic ferrofluid spikes.
-            spike_strength = (self.audio_level ** 1.2) * 3.5  # Much stronger: 1.2 power, 3.5x multiplier
+            # Spike formation during beats: forceful outward ejection at surface.
+            spike_strength = (self.audio_level ** 1.05) * 5.8
             if dist > self.radius * 0.42:  # Broader range: from 42% radius outward
-                spike_push = spike_strength * dt * 6.5  # Much more aggressive push
+                spike_push = spike_strength * dt * (7.0 + 12.0 * burst)
                 self.px[i] += nx * spike_push
                 self.py[i] += ny * spike_push
+
+            # Beat burst: split body into lobes, then collapse back on off-beat.
+            angle = math.atan2(dy, dx)
+            lobe = math.sin(angle * 6.0 + t * 4.5)
+            burst_push = burst * dt * 8.5 * lobe
+            self.px[i] += nx * burst_push
+            self.py[i] += ny * burst_push
+
+            # Quiet phase cohesion: metaball-like recombination toward centroid.
+            merge_gain = (1.0 - burst) * (0.35 + 0.65 * (1.0 - self.audio_level))
+            cdx = self.px[i] - cx
+            cdy = self.py[i] - cy
+            clen = math.sqrt(cdx * cdx + cdy * cdy) + 1e-6
+            self.px[i] -= (cdx / clen) * dt * 2.8 * merge_gain
+            self.py[i] -= (cdy / clen) * dt * 2.8 * merge_gain
 
             # Add a dance swirl around center (always active when there's audio).
             twirl = 0.55 + 0.45 * math.sin(t * 3.2 + dist * 0.24)
@@ -352,9 +378,9 @@ class FerrofluidDancerDemo:
                     dx = (sx + 0.5) - x
                     dy = (sy + 0.5) - y
                     d2 = dx * dx + dy * dy
-                    if d2 > 4.2:
+                    if d2 > 3.2:
                         continue
-                    weight = (1.0 - d2 / 4.2) * 2.40
+                    weight = (1.0 - d2 / 3.2) * 2.0
                     self.density[sy * self.grid_w + sx] += weight
 
         # Two blur passes.
@@ -374,7 +400,7 @@ class FerrofluidDancerDemo:
                 up = self.blur[up_row + x]
                 mid = self.blur[row + x]
                 dn = self.blur[dn_row + x]
-                self.density[row + x] = (up + mid * 2.0 + dn) * 0.25
+                self.density[row + x] = (up + mid * 1.2 + dn) / 3.2
 
     def render_frame(self):
         self._rasterize_density()
@@ -429,10 +455,10 @@ class FerrofluidDancerDemo:
                     pulse = math.exp(-((dist_center - pulse_r) * (dist_center - pulse_r)) / 16.0)
                     pulse *= 0.55 + 0.45 * math.sin(t * 12.0)
 
-                    waterness = smoothstep(0.04, 0.52, density)
+                    waterness = smoothstep(0.02, 0.40, density)
 
                     # Dense fluid: pure black base with bright specular highlights.
-                    if waterness > 0.6:
+                    if waterness > 0.4:
                         # Deep ferrofluid: render as dark with bright spec.
                         r = 8
                         g = 8
