@@ -48,7 +48,7 @@ MAGNET_HOLD = 10.5
 MAGNET_SWIRL = 4.8
 MAGNET_PATH_X_RATIO = 0.28
 MAGNET_PATH_Y_RATIO = 0.17
-FIELD_ATTACK_RATE = 0.34
+FIELD_ATTACK_RATE = 0.48
 FIELD_RELEASE_RATE = 0.12
 FIELD_ORBIT_LERP = 0.20
 RELEASE_COLLAPSE_FORCE = 6.2
@@ -56,6 +56,9 @@ RELEASE_COLLAPSE_DECAY = 0.86
 SPIKE_FIELD_RESPONSE = 0.22
 SPIKE_INSTABILITY_THRESHOLD = 0.16
 SPIKE_LEAN_GAIN = 0.32
+SNAP_FRONT_GAIN = 0.90
+SNAP_STRETCH_GAIN = 10.5
+SNAP_AXIS_PINCH = 0.85
 
 MAGNET_BASE_SPEED = 7.0
 MAGNET_PULSE_SPEED = 22.0
@@ -322,6 +325,11 @@ class FerrofluidDancerDemo:
         max_magnet_step = magnet_speed * dt
         max_swirl_step = swirl_speed * dt
         active_field = self.field_strength > 0.025
+        reach_dx = self.field_x - self.pool_x
+        reach_dy = self.field_y - self.pool_y
+        reach_len = math.sqrt(reach_dx * reach_dx + reach_dy * reach_dy) + 1e-6
+        reach_dir_x = reach_dx / reach_len
+        reach_dir_y = reach_dy / reach_len
 
         for i in range(len(self.px)):
             field_dx = self.field_x - self.px[i]
@@ -329,6 +337,13 @@ class FerrofluidDancerDemo:
             field_dist = math.sqrt(field_dx * field_dx + field_dy * field_dy) + 1e-6
             to_field_x = field_dx / field_dist
             to_field_y = field_dy / field_dist
+
+            pool_rel_x = self.px[i] - self.pool_x
+            pool_rel_y = self.py[i] - self.pool_y
+            along_reach = pool_rel_x * reach_dir_x + pool_rel_y * reach_dir_y
+            cross_reach = abs(pool_rel_x * reach_dir_y - pool_rel_y * reach_dir_x)
+            frontness = clamp(along_reach / reach_len, 0.0, 1.25)
+            axis_lock = clamp(1.0 - cross_reach / max(self.radius * 0.24, 1.0), 0.0, 1.0)
 
             self.vy[i] += gravity_step
 
@@ -346,12 +361,23 @@ class FerrofluidDancerDemo:
 
             if active_field:
                 far_gain = clamp(1.35 - field_dist / max(self.radius * 0.90, 1.0), 0.18, 1.35)
-                pull_step = max_magnet_step * far_gain
-                magnetic_accel = dt * self.field_strength * (MAGNET_ATTACK + MAGNET_HOLD * burst) / (1.0 + field_dist * 0.16)
+                lead_gain = 1.0 + SNAP_FRONT_GAIN * frontness * frontness
+                stretch_gate = clamp((axis_lock - 0.32) / 0.68, 0.0, 1.0)
+                stretch_gain = stretch_gate * clamp(frontness * 1.25, 0.0, 1.35)
+                pull_step = max_magnet_step * far_gain * (0.95 + 0.75 * frontness)
+                magnetic_accel = dt * self.field_strength * lead_gain * (46.0 + 18.0 * burst) / (1.0 + field_dist * 0.14)
+                snap_drive = dt * self.field_strength * SNAP_STRETCH_GAIN * stretch_gain
                 self.vx[i] += to_field_x * magnetic_accel
                 self.vy[i] += to_field_y * magnetic_accel
+                self.vx[i] += reach_dir_x * snap_drive
+                self.vy[i] += reach_dir_y * snap_drive
                 self.px[i] += to_field_x * pull_step
                 self.py[i] += to_field_y * pull_step
+
+                if 0.18 < frontness < 0.82 and axis_lock > 0.38:
+                    neck_pull = dt * self.field_strength * SNAP_AXIS_PINCH * axis_lock * (1.0 - frontness)
+                    self.px[i] += reach_dir_x * neck_pull
+                    self.py[i] += reach_dir_y * neck_pull
 
                 angle = math.atan2(self.py[i] - self.field_y, self.px[i] - self.field_x)
             else:
