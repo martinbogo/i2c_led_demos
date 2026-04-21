@@ -16,7 +16,7 @@ import time
 
 from badapple_waveshare import DisplayDriver, LCD_HEIGHT, LCD_WIDTH, SPI_BUS, SPI_DEVICE
 
-SIM_SIZE = 60
+SIM_SIZE = 80
 SCALE = LCD_WIDTH // SIM_SIZE
 CONTAINER_CENTER = (SIM_SIZE - 1) * 0.5
 CONTAINER_RADIUS = SIM_SIZE * 0.5
@@ -64,7 +64,6 @@ def smoothstep(edge0, edge1, value):
 
 
 def pack_panel_color(r, g, b):
-    # Panel MADCTL=0x08 has bit 1 (BGR) = 0, so it is in RGB mode, not BGR.
     return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
 
@@ -106,13 +105,14 @@ class FerrofluidDancerDemo:
         self.blur = [0.0] * (self.grid_w * self.grid_h)
         self.surface_mask = [False] * (self.grid_w * self.grid_h)
         self.frame = bytearray(LCD_WIDTH * LCD_HEIGHT * 2)
-        self.scaled_row = bytearray(LCD_WIDTH * 2)
+        self.row_buffers = [bytearray(LCD_WIDTH * 2) for _ in range(SCALE)]
 
         self.dx_values = [x - self.center for x in range(self.grid_w)]
         self.dy_values = [y - self.center for y in range(self.grid_h)]
         self.base_x_values = [x * SCALE * 2 for x in range(self.grid_w)]
         self.base_y_values = [y * SCALE for y in range(self.grid_h)]
         self.row_stride = LCD_WIDTH * 2
+        self.sub_offsets = (-0.34, 0.0, 0.34)
 
         self.bg_r = [0] * (self.grid_w * self.grid_h)
         self.bg_g = [0] * (self.grid_w * self.grid_h)
@@ -144,7 +144,6 @@ class FerrofluidDancerDemo:
             self.vy.append((random.random() - 0.5) * 0.7)
 
     def _sim_audio_level(self, t):
-        # Occasional short silence gap so the ferrofluid can settle.
         if t >= self.next_silence_time:
             gap = random.uniform(0.85, 2.00)
             self.silence_until = t + gap
@@ -153,7 +152,6 @@ class FerrofluidDancerDemo:
         if t < self.silence_until:
             return 0.0
 
-        # Rock-song form over 64s: intro(8), verse(16), chorus(16), bridge(8), chorus(16).
         tempo_bpm = 112.0
         beat = 60.0 / tempo_bpm
         bar = beat * 4.0
@@ -205,13 +203,11 @@ class FerrofluidDancerDemo:
             hihat = hit_train([i * 0.25 * beat for i in range(16)], 14.0, 2.4)
             section_gain = 1.00
 
-        # End-of-phrase fill every 8 bars, last beat only.
         fill = 0.0
         if bar_idx % 8 == 7 and bar_t > 3.0 * beat:
             fill = hit_train([3.0 * beat, 3.25 * beat, 3.5 * beat, 3.75 * beat], 16.0, 2.0)
 
-        # Bass follows a simple harmonic pulse with slight phrasing variation.
-        phrase = (bar_idx % 4)
+        phrase = bar_idx % 4
         bass_freq = 1.6 + 0.15 * phrase
         bass = 0.5 + 0.5 * math.sin((t + self.song_seed) * bass_freq)
         bass = max(0.22, bass)
@@ -237,7 +233,6 @@ class FerrofluidDancerDemo:
                 radial = math.sqrt(radial_sq) / max(self.radius, 1.0)
                 vignette = clamp(1.0 - radial * 0.62, 0.30, 1.0)
 
-                # Cool neutral gray palette.
                 base = 134 + int(30 * vignette)
                 grain = int(7 * (0.5 + 0.5 * math.sin(0.28 * sx + 0.37 * sy)))
                 level = clamp(base + grain, 0, 255)
@@ -255,15 +250,11 @@ class FerrofluidDancerDemo:
         t = self.sim_time
         self.audio_level = self._sim_audio_level(t)
 
-        # Ferrofluid is EXTREMELY attracted to the magnet: it dances, not pools.
-        # Magnetic attraction stays strong unless in dead silence.
-        audio_responsive_gain = 0.4 + 0.6 * (self.audio_level ** 0.5)  # Min 0.4, max 1.0
-        
+        audio_responsive_gain = 0.4 + 0.6 * (self.audio_level ** 0.5)
         pulse = 0.5 + 0.5 * math.sin(t * 10.5)
         magnet_speed = (MAGNET_BASE_SPEED + MAGNET_PULSE_SPEED * pulse) * audio_responsive_gain
         swirl_speed = SWIRL_SPEED * (0.3 + 0.7 * self.audio_level)
 
-        # Beat burst envelope for visible spike ejection and metaball-style split/recombine.
         beat_cycle = t % 4.0
         burst = 0.0
         if beat_cycle < 2.0:
@@ -271,14 +262,10 @@ class FerrofluidDancerDemo:
                 env = max(0.0, 1.0 - abs(beat_cycle - hit_time) * 10.0)
                 burst = max(burst, env * env)
 
-        # Compute centroid so quiet phases strongly re-merge droplets.
         cx = sum(self.px) / max(1, len(self.px))
         cy = sum(self.py) / max(1, len(self.py))
 
-        # Light gravity: ferrofluid is heavy, but the magnet is much stronger.
-        gravity_speed = 1.2  # Reduced from 6.5; magnet overwhelms this
-        
-        # Bounded drift keeps motion stable and avoids solver tunneling.
+        gravity_speed = 1.2
         max_magnet_step = magnet_speed * dt
         max_swirl_step = swirl_speed * dt
         gravity_step = gravity_speed * dt
@@ -290,22 +277,17 @@ class FerrofluidDancerDemo:
             nx = dx / dist
             ny = dy / dist
 
-            # Gravity: always present but weak (magnet dominates).
             self.py[i] += gravity_step
 
-            # Magnetic pull to center: baseline term, further modulated by spoke field.
             far_gain = clamp(dist / max(self.radius * 0.7, 1.0), 0.2, 1.3)
             pull_step = max_magnet_step * far_gain
 
-            # Spike formation during beats: forceful outward ejection at surface.
             spike_strength = (self.audio_level ** 1.05) * 5.8
-            if dist > self.radius * 0.42:  # Broader range: from 42% radius outward
+            if dist > self.radius * 0.42:
                 spike_push = spike_strength * dt * (7.0 + 12.0 * burst)
                 self.px[i] += nx * spike_push
                 self.py[i] += ny * spike_push
 
-            # 8-point spoke field: modulates magnetic gradient instead of applying
-            # hard geometric pushes, which is more stable and fluid-like.
             angle = math.atan2(dy, dx)
             star_phase = angle * STAR_POINTS
             star_wave = 0.5 + 0.5 * math.cos(star_phase)
@@ -316,23 +298,19 @@ class FerrofluidDancerDemo:
             self.px[i] -= nx * spoke_pull
             self.py[i] -= ny * spoke_pull
 
-            # Small spoke tip growth only near surface to emulate instability peaks.
             if dist > self.radius * 0.46:
                 spoke_push = burst * dt * 7.5 * (star_focus ** 0.6)
                 self.px[i] += nx * spoke_push
                 self.py[i] += ny * spoke_push
 
-            # Peak beat targeting: during strongest bursts, spokes reach ~80% radius.
             peak_gate = clamp((burst - 0.62) / 0.38, 0.0, 1.0)
             target_radius = self.radius * PEAK_SPIKE_RADIUS_RATIO
             radius_error = target_radius - dist
             if star_focus > 0.22 and peak_gate > 0.0:
-                # Push outward when below target, lightly pull back when overshooting.
                 target_drive = dt * peak_gate * star_focus * 14.0
                 self.px[i] += nx * radius_error * target_drive
                 self.py[i] += ny * radius_error * target_drive
 
-            # Gentle tangential steering keeps spoke tips coherent without rigid pinching.
             tx = -ny
             ty = nx
             align_sign = math.sin(star_phase)
@@ -340,7 +318,6 @@ class FerrofluidDancerDemo:
             self.px[i] += tx * steer * (-1.0 if align_sign > 0.0 else 1.0)
             self.py[i] += ty * steer * (-1.0 if align_sign > 0.0 else 1.0)
 
-            # Quiet phase cohesion: metaball-like recombination toward centroid.
             merge_gain = (1.0 - burst) * (0.35 + 0.65 * (1.0 - self.audio_level))
             cdx = self.px[i] - cx
             cdy = self.py[i] - cy
@@ -348,7 +325,6 @@ class FerrofluidDancerDemo:
             self.px[i] -= (cdx / clen) * dt * 2.8 * merge_gain
             self.py[i] -= (cdy / clen) * dt * 2.8 * merge_gain
 
-            # Add a dance swirl around center (always active when there's audio).
             twirl = 0.55 + 0.45 * math.sin(t * 3.2 + dist * 0.24)
             swirl = max_swirl_step * twirl
             self.px[i] += -ny * swirl
@@ -360,14 +336,12 @@ class FerrofluidDancerDemo:
 
         self._apply_magnetic_motion(dt)
 
-        # Velocity path only carries short transient motion.
         for i in range(particle_count):
             self.vx[i] *= VELOCITY_DAMPING
             self.vy[i] *= VELOCITY_DAMPING
             self.px[i] += self.vx[i] * dt
             self.py[i] += self.vy[i] * dt
 
-        # Spatial hash for local interactions.
         buckets = {}
         for i in range(particle_count):
             gx = int(self.px[i] / GRID_CELL_SIZE)
@@ -416,8 +390,6 @@ class FerrofluidDancerDemo:
                         self.vx[j] -= rvx * VISCOSITY
                         self.vy[j] -= rvy * VISCOSITY
 
-                        # Lightweight cohesion to maintain a soft connected surface
-                        # without the expensive spring-like tension term.
                         if dist > PARTICLE_REST_RADIUS * 0.90:
                             coh_q = 1.0 - (dist / INTERACTION_RADIUS)
                             if coh_q > 0.20:
@@ -427,7 +399,6 @@ class FerrofluidDancerDemo:
                                 self.px[j] -= nx * cohesion
                                 self.py[j] -= ny * cohesion
 
-        # Circular boundary constraint.
         for i in range(particle_count):
             dx = self.px[i] - self.center
             dy = self.py[i] - self.center
@@ -472,7 +443,6 @@ class FerrofluidDancerDemo:
                     weight = (1.0 - d2 / 7.0) * 2.8
                     self.density[sy * self.grid_w + sx] += weight
 
-        # Two blur passes.
         for y in range(self.grid_h):
             row = y * self.grid_w
             for x in range(self.grid_w):
@@ -491,7 +461,6 @@ class FerrofluidDancerDemo:
                 dn = self.blur[dn_row + x]
                 self.density[row + x] = (up + mid * 1.6 + dn) / 3.6
 
-        # Third blur pass to merge tiny particle islands into a continuous sheet.
         for y in range(self.grid_h):
             row = y * self.grid_w
             for x in range(self.grid_w):
@@ -510,7 +479,6 @@ class FerrofluidDancerDemo:
                 dn = self.blur[dn_row + x]
                 self.density[row + x] = (up + mid * 2.0 + dn) * 0.25
 
-        # Hysteresis classification for stable isosurface (reduces popping/flicker).
         for idx in range(cell_count):
             d = self.density[idx]
             if self.surface_mask[idx]:
@@ -518,19 +486,17 @@ class FerrofluidDancerDemo:
             else:
                 self.surface_mask[idx] = d > ISO_ENTER
 
-
     def render_frame(self):
         self._rasterize_density()
 
         frame = self.frame
-        row_buffer = self.scaled_row
+        row_buffers = self.row_buffers
         row_stride = self.row_stride
         density_map = self.density
         bg_r = self.bg_r
         bg_g = self.bg_g
         bg_b = self.bg_b
         t = self.sim_time
-
         pulse_r = 2.2 + 6.5 * self.audio_level
 
         for sy in range(self.grid_h):
@@ -540,113 +506,118 @@ class FerrofluidDancerDemo:
             density_up = max(0, sy - 1) * self.grid_w
             density_dn = min(self.grid_h - 1, sy + 1) * self.grid_w
 
+            for oy in range(SCALE):
+                row_buffers[oy][:] = b"\x00" * len(row_buffers[oy])
+
             for sx in range(self.grid_w):
                 dx = self.dx_values[sx]
                 base_x = self.base_x_values[sx]
-                radial_sq = dx * dx + dy * dy
+                idx = density_row + sx
+                density = density_map[idx]
+                is_fluid = self.surface_mask[idx]
 
-                # Compute distance to circle for antialiasing edge pixels.
-                radial = math.sqrt(radial_sq) if radial_sq > 1e-6 else 0.0
-                edge_blend = 1.0 if radial <= self.radius - 2.0 else smoothstep(self.radius + 1.5, self.radius - 2.0, radial)
+                sx_l = sx - 1 if sx > 0 else 0
+                sx_r = sx + 1 if sx < self.grid_w - 1 else self.grid_w - 1
+                density_l = density_map[density_row + sx_l]
+                density_r = density_map[density_row + sx_r]
+                density_u = density_map[density_up + sx]
+                density_d = density_map[density_dn + sx]
+                grad_x = density_r - density_l
+                grad_y = density_d - density_u
 
-                if edge_blend < 0.01:
-                    # Fully outside: black.
-                    hi = BLACK_HI
-                    lo = BLACK_LO
+                dist_center = math.sqrt(dx * dx + dy * dy)
+                pulse = math.exp(-((dist_center - pulse_r) * (dist_center - pulse_r)) / 16.0)
+                pulse *= 0.55 + 0.45 * math.sin(t * 12.0)
+
+                base_waterness = smoothstep(0.002, 0.19, density)
+                if is_fluid:
+                    base_waterness = max(base_waterness, 0.42)
                 else:
-                    idx = density_row + sx
-                    density = density_map[idx]
-                    is_fluid = self.surface_mask[idx]
+                    base_waterness *= 0.68
 
-                    sx_l = sx - 1 if sx > 0 else 0
-                    sx_r = sx + 1 if sx < self.grid_w - 1 else self.grid_w - 1
-                    density_l = density_map[density_row + sx_l]
-                    density_r = density_map[density_row + sx_r]
-                    density_u = density_map[density_up + sx]
-                    density_d = density_map[density_dn + sx]
-                    grad_x = density_r - density_l
-                    grad_y = density_d - density_u
-                    slope = abs(grad_x) + abs(grad_y)
+                normal_x = -grad_x * 0.7
+                normal_y = -grad_y * 0.7
+                normal_z = 1.0
+                normal_len = math.sqrt(normal_x * normal_x + normal_y * normal_y + normal_z * normal_z)
+                if normal_len > 1e-6:
+                    normal_x /= normal_len
+                    normal_y /= normal_len
+                    normal_z /= normal_len
 
-                    # Magnetic pulse glow.
-                    dist_center = math.sqrt(dx * dx + dy * dy)
-                    pulse = math.exp(-((dist_center - pulse_r) * (dist_center - pulse_r)) / 16.0)
-                    pulse *= 0.55 + 0.45 * math.sin(t * 12.0)
+                light_x, light_y, light_z = -0.40, -0.45, 0.80
+                spec = max(0.0, normal_x * light_x + normal_y * light_y + normal_z * light_z)
+                spec = spec ** 16
+                spec_bright = int(spec * 255.0)
 
-                    waterness = smoothstep(0.002, 0.19, density)
-                    if is_fluid:
-                        waterness = max(waterness, 0.42)
+                base_r = bg_r[idx]
+                base_g = bg_g[idx]
+                base_b = bg_b[idx]
+
+                aa_needed = (0.10 < base_waterness < 0.55) or (abs(grad_x) + abs(grad_y) > 0.12)
+
+                if not aa_needed:
+                    if base_waterness > 0.28:
+                        r = int(clamp(8 + spec_bright * 0.25, 0, 255))
+                        g = int(clamp(8 + spec_bright * 0.50, 0, 255))
+                        b = int(clamp(10 + spec_bright * 0.75, 0, 255))
                     else:
-                        waterness *= 0.68
-
-                    # Dense fluid: pure black base with bright specular highlights.
-                    if waterness > 0.28:
-                        # Deep ferrofluid: render as dark with bright spec.
-                        r = 8
-                        g = 8
-                        b = 10
-
-                        # Normal vector from density gradient.
-                        normal_x = -grad_x * 0.7
-                        normal_y = -grad_y * 0.7
-                        normal_z = 1.0
-                        normal_len = math.sqrt(normal_x * normal_x + normal_y * normal_y + normal_z * normal_z)
-                        if normal_len > 1e-6:
-                            normal_x /= normal_len
-                            normal_y /= normal_len
-                            normal_z /= normal_len
-
-                        # Bright specular highlight: light from top-left-front.
-                        light_x, light_y, light_z = -0.40, -0.45, 0.80
-                        spec = max(0.0, normal_x * light_x + normal_y * light_y + normal_z * light_z)
-                        spec = spec ** 16
-                        spec_bright = int(spec * 255.0)
-                        r = clamp(r + spec_bright * 0.25, 0, 255)
-                        g = clamp(g + spec_bright * 0.50, 0, 255)
-                        b = clamp(b + spec_bright * 0.75, 0, 255)
-                    else:
-                        # Near-fluid or background: blend normally.
-                        base_r = bg_r[idx]
-                        base_g = bg_g[idx]
-                        base_b = bg_b[idx]
-
-                        surface_alpha = clamp(0.64 + waterness * 0.33, 0.0, 0.993)
-                        fluid_r = 6
-                        fluid_g = 6
-                        fluid_b = 8
-
-                        r = int(base_r * (1.0 - surface_alpha) + fluid_r * surface_alpha)
-                        g = int(base_g * (1.0 - surface_alpha) + fluid_g * surface_alpha)
-                        b = int(base_b * (1.0 - surface_alpha) + fluid_b * surface_alpha)
-
-                        # Pulse mostly at background.
-                        pulse_boost = int(14 * pulse * (1.0 - waterness) * (1.0 - waterness))
+                        surface_alpha = clamp(0.64 + base_waterness * 0.33, 0.0, 0.993)
+                        r = int(base_r * (1.0 - surface_alpha) + 6 * surface_alpha)
+                        g = int(base_g * (1.0 - surface_alpha) + 6 * surface_alpha)
+                        b = int(base_b * (1.0 - surface_alpha) + 8 * surface_alpha)
+                        pulse_boost = int(14 * pulse * (1.0 - base_waterness) * (1.0 - base_waterness))
                         r = clamp(r + pulse_boost, 0, 255)
                         g = clamp(g + pulse_boost, 0, 255)
                         b = clamp(b + pulse_boost, 0, 255)
 
-                    # Apply edge blending for antialiasing.
-                    bg_r_edge = bg_r[idx]
-                    bg_g_edge = bg_g[idx]
-                    bg_b_edge = bg_b[idx]
-                    r = int(r * edge_blend + bg_r_edge * (1.0 - edge_blend))
-                    g = int(g * edge_blend + bg_g_edge * (1.0 - edge_blend))
-                    b = int(b * edge_blend + bg_b_edge * (1.0 - edge_blend))
-
                     color565 = pack_panel_color(r, g, b)
                     hi = (color565 >> 8) & 0xFF
                     lo = color565 & 0xFF
+                    for oy in range(SCALE):
+                        sub_row = row_buffers[oy]
+                        for ox in range(SCALE):
+                            px_write = base_x + ox * 2
+                            sub_row[px_write] = hi
+                            sub_row[px_write + 1] = lo
+                else:
+                    for oy, off_y in enumerate(self.sub_offsets):
+                        sub_dy = dy + off_y
+                        sub_row = row_buffers[oy]
+                        for ox, off_x in enumerate(self.sub_offsets):
+                            sub_dx = dx + off_x
+                            sub_radial = math.sqrt(sub_dx * sub_dx + sub_dy * sub_dy)
+                            sub_edge = 1.0 if sub_radial <= self.radius - 1.0 else smoothstep(self.radius + 0.6, self.radius - 1.0, sub_radial)
+                            sub_density = density + grad_x * off_x + grad_y * off_y
+                            waterness = smoothstep(0.002, 0.19, sub_density)
+                            waterness = max(waterness, base_waterness * 0.85)
 
-                px_write = base_x
-                for _ in range(SCALE):
-                    row_buffer[px_write] = hi
-                    row_buffer[px_write + 1] = lo
-                    px_write += 2
+                            if waterness > 0.28:
+                                r = clamp(8 + spec_bright * 0.25, 0, 255)
+                                g = clamp(8 + spec_bright * 0.50, 0, 255)
+                                b = clamp(10 + spec_bright * 0.75, 0, 255)
+                            else:
+                                surface_alpha = clamp(0.64 + waterness * 0.33, 0.0, 0.993)
+                                r = int(base_r * (1.0 - surface_alpha) + 6 * surface_alpha)
+                                g = int(base_g * (1.0 - surface_alpha) + 6 * surface_alpha)
+                                b = int(base_b * (1.0 - surface_alpha) + 8 * surface_alpha)
+                                pulse_boost = int(14 * pulse * (1.0 - waterness) * (1.0 - waterness))
+                                r = clamp(r + pulse_boost, 0, 255)
+                                g = clamp(g + pulse_boost, 0, 255)
+                                b = clamp(b + pulse_boost, 0, 255)
+
+                            r = int(r * sub_edge + base_r * (1.0 - sub_edge))
+                            g = int(g * sub_edge + base_g * (1.0 - sub_edge))
+                            b = int(b * sub_edge + base_b * (1.0 - sub_edge))
+
+                            color565 = pack_panel_color(r, g, b)
+                            px_write = base_x + ox * 2
+                            sub_row[px_write] = (color565 >> 8) & 0xFF
+                            sub_row[px_write + 1] = color565 & 0xFF
 
             row_start = base_y * row_stride
             for oy in range(SCALE):
                 dst = row_start + oy * row_stride
-                frame[dst:dst + row_stride] = row_buffer
+                frame[dst:dst + row_stride] = row_buffers[oy]
 
         return frame
 
@@ -716,7 +687,8 @@ class FerrofluidDancerDemo:
         except KeyboardInterrupt:
             pass
         finally:
-            self.display.close()
+            if hasattr(self.display, "close"):
+                self.display.close()
 
 
 def parse_args():
