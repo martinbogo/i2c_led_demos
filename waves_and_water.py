@@ -30,15 +30,15 @@ PARTICLE_COUNT = 520
 PARTICLE_REST_RADIUS = 2.25
 PARTICLE_REST_RADIUS_SQ = PARTICLE_REST_RADIUS * PARTICLE_REST_RADIUS
 GRID_CELL_SIZE = 3.4
-GRAVITY_ACCEL = 19.0
-VELOCITY_DAMPING = 0.9965
-WALL_BOUNCE = 0.52
+GRAVITY_ACCEL = 5.0
+VELOCITY_DAMPING = 0.992
+WALL_BOUNCE = 0.22
 VISCOSITY = 0.006
 POSITION_RELAX = 0.56
 SURFACE_TENSION = 0.00035
 INTERACTION_RADIUS = PARTICLE_REST_RADIUS * 1.75
 INTERACTION_RADIUS_SQ = INTERACTION_RADIUS * INTERACTION_RADIUS
-PRESSURE_PUSH = 0.080
+PRESSURE_PUSH = 0.13
 TARGET_FPS = 60
 PHYSICS_HZ = 30.0
 DEFAULT_WATER_SPI_SPEED = 80000000
@@ -127,20 +127,23 @@ class WavesAndWaterDemo:
             print(message)
 
     def _pick_new_gravity(self, initial=False):
-        angle = random.random() * math.tau
+        # Restrict to the downward hemisphere (0..π) so gravity always has a
+        # net downward component — simulating tilting the display on Earth
+        # rather than spinning it.  π/2 ± ~80° covers left/right/forward/back.
+        angle = random.uniform(0.0, math.pi)
         prev_gx = self.gravity_target_x
         prev_gy = self.gravity_target_y
         self.gravity_target_x = math.cos(angle)
         self.gravity_target_y = math.sin(angle)
-        self.gravity_timer = random.uniform(2.0, 15.0)
+        self.gravity_timer = random.uniform(3.0, 12.0)
 
-        # Add a coherent impulse so the fluid sloshes as a body, not as random spray.
+        # Add a mild coherent impulse so the fluid sloshes as a body.
         if not initial:
             delta_gx = self.gravity_target_x - prev_gx
             delta_gy = self.gravity_target_y - prev_gy
             turn_mag = min(1.0, math.hypot(delta_gx, delta_gy))
-            dir_impulse = 0.9 + 0.6 * turn_mag
-            swirl_impulse = 0.55 + 0.35 * turn_mag
+            dir_impulse = 0.25 + 0.20 * turn_mag
+            swirl_impulse = 0.18 + 0.12 * turn_mag
             for i in range(len(self.px)):
                 rx = self.px[i] - self.center
                 ry = self.py[i] - self.center
@@ -178,8 +181,8 @@ class WavesAndWaterDemo:
 
         particle_count = len(self.px)
 
-        # Smoothly rotate toward the next gravity direction.
-        blend = min(1.0, dt * 1.8)
+        # Smoothly rotate toward the next gravity direction (slow blend = gradual tilt feel).
+        blend = min(1.0, dt * 0.7)
         self.gravity_x += (self.gravity_target_x - self.gravity_x) * blend
         self.gravity_y += (self.gravity_target_y - self.gravity_y) * blend
         g_len = math.hypot(self.gravity_x, self.gravity_y)
