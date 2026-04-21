@@ -135,12 +135,26 @@ class FerrofluidDancerDemo:
             self.vy.append((random.random() - 0.5) * 0.7)
 
     def _sim_audio_level(self, t):
+        # Simulate a rock/electronic beat with multiple frequency bands.
+        # Bass: deep, slow, driving
         bass = 0.5 + 0.5 * math.sin(t * 2.2)
+        # Midrange: fast, snappy
         mid = 0.5 + 0.5 * math.sin(t * 4.9 + 1.3)
+        # Treble: very fast shimmer
+        treble = 0.5 + 0.5 * math.sin(t * 9.8 + 0.5)
+        # Beat: impulsive, on-off nature (kick drum)
         beat = max(0.0, math.sin(t * 9.2)) ** 4
+        # Fill/triplet: quick accent
         triplet = 0.5 + 0.5 * math.sin(t * 13.1 + 0.7)
-        energy = 0.14 + bass * 0.28 + mid * 0.24 + triplet * 0.10 + beat * 0.44
-        return clamp(energy, 0.0, 1.0)
+        
+        # Mix the bands into overall energy.
+        energy = 0.12 + bass * 0.30 + mid * 0.22 + treble * 0.06 + triplet * 0.08 + beat * 0.22
+        
+        # Silence/gap simulation: every 8 seconds of beat time, 2 seconds of quiet.
+        silence_gate = 0.5 + 0.5 * math.sin(t * math.pi / 4.0)
+        silence_gate = max(0.0, silence_gate - 0.3) / 0.7
+        
+        return clamp(energy * silence_gate, 0.0, 1.0)
 
     def _build_background_map(self):
         for sy in range(self.grid_h):
@@ -170,13 +184,21 @@ class FerrofluidDancerDemo:
         t = self.sim_time
         self.audio_level = self._sim_audio_level(t)
 
+        # Magnetic attraction is audio-driven: strong during beats, nearly zero during silence.
+        # This allows gravity to pool the fluid at the bottom during quiet moments.
+        audio_responsive_gain = self.audio_level ** 0.8  # Compress to make silence more pronounced
+        
         pulse = 0.5 + 0.5 * math.sin(t * 8.5)
-        magnet_speed = MAGNET_BASE_SPEED + MAGNET_PULSE_SPEED * (0.25 + 0.75 * self.audio_level) * pulse
+        magnet_speed = (MAGNET_BASE_SPEED + MAGNET_PULSE_SPEED * pulse) * audio_responsive_gain
         swirl_speed = SWIRL_SPEED * (0.2 + 0.8 * self.audio_level)
 
+        # Constant downward gravity (always active, independent of audio).
+        gravity_speed = 2.0  # Sim units/s of downward drift
+        
         # Bounded drift keeps motion stable and avoids solver tunneling.
         max_magnet_step = magnet_speed * dt
         max_swirl_step = swirl_speed * dt
+        gravity_step = gravity_speed * dt
 
         for i in range(len(self.px)):
             dx = self.px[i] - self.center
@@ -185,17 +207,21 @@ class FerrofluidDancerDemo:
             nx = dx / dist
             ny = dy / dist
 
-            # Pull to center, stronger for farther particles.
+            # Gravity: always pull downward at a steady rate.
+            self.py[i] += gravity_step
+
+            # Magnetic pull to center: stronger when audio is present, weak during silence.
             far_gain = clamp(dist / max(self.radius * 0.7, 1.0), 0.2, 1.3)
             pull_step = max_magnet_step * far_gain
             self.px[i] -= nx * pull_step
             self.py[i] -= ny * pull_step
 
-            # Add a dance swirl around center.
-            twirl = 0.55 + 0.45 * math.sin(t * 3.2 + dist * 0.24)
-            swirl = max_swirl_step * twirl
-            self.px[i] += -ny * swirl
-            self.py[i] += nx * swirl
+            # Add a dance swirl around center when audio is present.
+            if audio_responsive_gain > 0.1:
+                twirl = 0.55 + 0.45 * math.sin(t * 3.2 + dist * 0.24)
+                swirl = max_swirl_step * twirl
+                self.px[i] += -ny * swirl
+                self.py[i] += nx * swirl
 
     def step(self, dt):
         self.sim_time += dt
