@@ -59,6 +59,11 @@ SPIKE_LEAN_GAIN = 0.32
 SNAP_FRONT_GAIN = 0.90
 SNAP_STRETCH_GAIN = 10.5
 SNAP_AXIS_PINCH = 0.85
+BREAKUP_FIELD_THRESHOLD = 0.42
+BREAKUP_COHESION_DROP = 0.82
+BREAKUP_PUSH_GAIN = 0.22
+FLING_IMPULSE_GAIN = 12.0
+FLING_TANGENTIAL_GAIN = 7.5
 
 MAGNET_BASE_SPEED = 7.0
 MAGNET_PULSE_SPEED = 22.0
@@ -155,6 +160,7 @@ class FerrofluidDancerDemo:
         self.spike_drive = 0.0
         self.release_collapse = 0.0
         self.field_phase = random.random() * math.tau
+        self.breakup_drive = 0.0
 
         self._spawn_initial_particles()
         self._build_background_map()
@@ -318,6 +324,11 @@ class FerrofluidDancerDemo:
         magnet_speed = (MAGNET_BASE_SPEED + MAGNET_PULSE_SPEED * pulse) * audio_responsive_gain
         swirl_speed = SWIRL_SPEED * (0.12 + 0.88 * self.field_strength)
 
+        breakup_gate = clamp((self.field_strength - BREAKUP_FIELD_THRESHOLD) / (1.0 - BREAKUP_FIELD_THRESHOLD), 0.0, 1.0)
+        music_gate = clamp((self.audio_level - 0.18) / 0.82, 0.0, 1.0)
+        burst_gate = clamp((burst - 0.12) / 0.88, 0.0, 1.0)
+        self.breakup_drive = clamp(breakup_gate * (0.58 * music_gate + 0.42 * burst_gate), 0.0, 1.0)
+
         cx = sum(self.px) / max(1, len(self.px))
         cy = sum(self.py) / max(1, len(self.py))
 
@@ -378,6 +389,23 @@ class FerrofluidDancerDemo:
                     neck_pull = dt * self.field_strength * SNAP_AXIS_PINCH * axis_lock * (1.0 - frontness)
                     self.px[i] += reach_dir_x * neck_pull
                     self.py[i] += reach_dir_y * neck_pull
+
+                if self.breakup_drive > 0.02:
+                    tangential_x = -to_field_y
+                    tangential_y = to_field_x
+                    phase = t * 7.2 + i * 0.037 + self.song_seed
+                    fling_wave = 0.5 + 0.5 * math.sin(phase)
+                    fling_gate = clamp((frontness - 0.12) / 0.88, 0.0, 1.0)
+                    impulse = dt * self.breakup_drive * fling_gate * fling_wave
+                    self.vx[i] += tangential_x * impulse * FLING_TANGENTIAL_GAIN
+                    self.vy[i] += tangential_y * impulse * FLING_TANGENTIAL_GAIN
+
+                    cdx = self.px[i] - cx
+                    cdy = self.py[i] - cy
+                    clen = math.sqrt(cdx * cdx + cdy * cdy) + 1e-6
+                    radial_kick = dt * self.breakup_drive * (0.35 + 0.65 * fling_wave)
+                    self.vx[i] += (cdx / clen) * radial_kick * FLING_IMPULSE_GAIN
+                    self.vy[i] += (cdy / clen) * radial_kick * FLING_IMPULSE_GAIN
 
                 angle = math.atan2(self.py[i] - self.field_y, self.px[i] - self.field_x)
             else:
@@ -464,7 +492,8 @@ class FerrofluidDancerDemo:
                         ny = dy / dist
 
                         q = 1.0 - (dist / INTERACTION_RADIUS)
-                        push = q * q * PRESSURE_PUSH
+                        breakup_push = 1.0 + BREAKUP_PUSH_GAIN * self.breakup_drive
+                        push = q * q * PRESSURE_PUSH * breakup_push
                         if dist < PARTICLE_REST_RADIUS:
                             overlap = PARTICLE_REST_RADIUS - dist
                             push += overlap * POSITION_RELAX * (0.8 + 0.2 * overlap / PARTICLE_REST_RADIUS)
@@ -486,7 +515,8 @@ class FerrofluidDancerDemo:
                             coh_q = 1.0 - (dist / INTERACTION_RADIUS)
                             if coh_q > 0.20:
                                 stretch_bias = SKIN_STRETCH_COHESION if dist > PARTICLE_REST_RADIUS * 1.08 else 0.0
-                                cohesion = coh_q * (0.045 + stretch_bias)
+                                cohesion_scale = 1.0 - BREAKUP_COHESION_DROP * self.breakup_drive
+                                cohesion = coh_q * (0.045 + stretch_bias) * cohesion_scale
                                 self.px[i] += nx * cohesion
                                 self.py[i] += ny * cohesion
                                 self.px[j] -= nx * cohesion
