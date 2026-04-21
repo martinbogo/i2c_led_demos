@@ -213,8 +213,8 @@ class DisplayDriver:
         # Apply fuller panel setup for Waveshare GC9A01 module variants
         self._run_waveshare_init_sequence()
         
-        # Disable color inversion (INVOFF)
-        self._write_command(GC9A01A_INVOFF)
+        # Enable color inversion (INVON) to correct panel behavior
+        self._write_command(0x21)  # INVON command
         time.sleep(0.01)
         
         # Display on
