@@ -2872,6 +2872,7 @@ class Koi:
         self.scared = random.uniform(0, 9.0)
         self.swim_speed_trait = random.uniform(0.0, 9.0)
         self.offscreen_replacement_checked = False
+        self.offscreen_since = None
         self.vel = [random.uniform(-1, 1), random.uniform(-1, 1)]
         self.normalize(self.vel)
         self.vel[0] *= 2.0
@@ -2928,6 +2929,22 @@ class Koi:
 
     def _panic_turn_response(self):
         return self._scale_from_trait(0.14, 0.20, 0.28)
+
+    def _free_swim_boundary_acceleration(self, force_scale=0.06, slack=36.0):
+        ax = 0.0
+        ay = 0.0
+
+        if self.pos[0] < -slack:
+            ax += (-slack - self.pos[0]) * force_scale
+        elif self.pos[0] > LCD_WIDTH + slack:
+            ax -= (self.pos[0] - (LCD_WIDTH + slack)) * force_scale
+
+        if self.pos[1] < -slack:
+            ay += (-slack - self.pos[1]) * force_scale
+        elif self.pos[1] > LCD_HEIGHT + slack:
+            ay -= (self.pos[1] - (LCD_HEIGHT + slack)) * force_scale
+
+        return ax, ay
 
     def _generate_texture_marks(self):
         palette = [
@@ -3053,13 +3070,10 @@ class Koi:
             current_angle = math.atan2(self.vel[1], self.vel[0])
             new_angle = current_angle + wander_angle
             
-            # Keep them in bounds gently
-            cx, cy = LCD_WIDTH/2, LCD_HEIGHT/2
-            dx, dy = cx - self.pos[0], cy - self.pos[1]
-            dist_center = math.sqrt(dx**2 + dy**2)
-            if dist_center > LCD_WIDTH/2 - 20:
-                ax += dx * 0.05
-                ay += dy * 0.05
+            # Let fish drift off screen briefly before nudging them back.
+            bound_ax, bound_ay = self._free_swim_boundary_acceleration(force_scale=0.065, slack=38.0)
+            ax += bound_ax
+            ay += bound_ay
                 
             self.vel[0] = math.cos(new_angle) * speed + ax
             self.vel[1] = math.sin(new_angle) * speed + ay
@@ -3125,10 +3139,11 @@ class Koi:
             cx, cy = LCD_WIDTH/2, LCD_HEIGHT/2
             dx, dy = cx - self.pos[0], cy - self.pos[1]
             dist_center = math.sqrt(dx**2 + dy**2)
-            if dist_center > LCD_WIDTH/2 - 50: # stronger pull to center
-                ax += dx * 0.08
-                ay += dy * 0.08
-            else:
+            bound_ax, bound_ay = self._free_swim_boundary_acceleration(force_scale=0.11, slack=28.0)
+            ax += bound_ax + dx * 0.01
+            ay += bound_ay + dy * 0.01
+
+            if 0.0 <= self.pos[0] <= LCD_WIDTH and 0.0 <= self.pos[1] <= LCD_HEIGHT and dist_center < LCD_WIDTH/2 - 50:
                 self.hiding_state = "normal" # we are back!
                 
             self.vel[0] = math.cos(new_angle) * speed + ax
@@ -3305,10 +3320,7 @@ class Pond:
         return koi
 
     def _should_replace_offscreen_koi(self, koi):
-        if koi.scared <= 7.0:
-            return False
-
-        margin = 18.0
+        margin = 8.0
         outside = (
             koi.pos[0] < -margin
             or koi.pos[0] > LCD_WIDTH + margin
@@ -3316,14 +3328,23 @@ class Pond:
             or koi.pos[1] > LCD_HEIGHT + margin
         )
         if not outside:
+            koi.offscreen_since = None
             koi.offscreen_replacement_checked = False
+            return False
+
+        now = time.time()
+        if koi.offscreen_since is None:
+            koi.offscreen_since = now
+            return False
+
+        if now - koi.offscreen_since < 0.8:
             return False
 
         if koi.offscreen_replacement_checked:
             return False
 
         koi.offscreen_replacement_checked = True
-        return random.random() < 0.5
+        return random.random() < 0.1
 
     def _apply_floor_shimmer(self, img, now):
         img_arr = np.array(img, dtype=np.float32)
