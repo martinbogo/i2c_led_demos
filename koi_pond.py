@@ -3685,6 +3685,7 @@ class Pond:
         return img
 
 # Shared state
+GESTURE_SINGLE_TAP = 0x05
 GESTURE_DOUBLE_TAP = 0x0B
 GESTURE_LONG_PRESS = 0x0C
 
@@ -3745,6 +3746,13 @@ def touch_thread(driver):
                 data = bus.read_i2c_block_data(0x15, 0x01, 6)
                 gesture = data[0]
                 now = time.monotonic()
+                if not press_active and last_tap_time > 0.0 and now - last_tap_time > DOUBLE_TAP_MAX_GAP:
+                    if now - last_double_tap_emit > 0.05:
+                        gesture_x, gesture_y, gesture_code = last_tap_x, last_tap_y, GESTURE_SINGLE_TAP
+                        gesture_seq += 1
+                    last_tap_time = -10.0
+                    last_tap_x, last_tap_y = -1, -1
+
                 if data[1] > 0 or gesture in (GESTURE_DOUBLE_TAP, GESTURE_LONG_PRESS):
                     x = ((data[2] & 0x0F) << 8) | data[3]
                     y = ((data[4] & 0x0F) << 8) | data[5]
@@ -3756,10 +3764,14 @@ def touch_thread(driver):
                         gesture_x, gesture_y, gesture_code = x, y, gesture
                         gesture_seq += 1
                         last_double_tap_emit = now
+                        last_tap_time = -10.0
+                        last_tap_x, last_tap_y = -1, -1
                     elif gesture == GESTURE_LONG_PRESS and now - last_long_press_emit > 1.10:
                         gesture_x, gesture_y, gesture_code = x, y, gesture
                         gesture_seq += 1
                         last_long_press_emit = now
+                        last_tap_time = -10.0
+                        last_tap_x, last_tap_y = -1, -1
 
                     if data[1] > 0:
                         if not press_active:
@@ -3774,6 +3786,8 @@ def touch_thread(driver):
                                     gesture_x, gesture_y, gesture_code = x, y, GESTURE_LONG_PRESS
                                     gesture_seq += 1
                                     last_long_press_emit = now
+                                    last_tap_time = -10.0
+                                    last_tap_x, last_tap_y = -1, -1
                                 long_press_emitted = True
                 else:
                     if press_active:
@@ -3805,7 +3819,7 @@ def touch_thread(driver):
         pass
 
 def main():
-    global assets, is_touched, gesture_seq, gesture_code, gesture_x, gesture_y
+    global assets, gesture_seq, gesture_code, gesture_x, gesture_y
     print("Loading assets...")
     assets = PondAssets()
     
@@ -3832,20 +3846,17 @@ def main():
     
     print("Running Koi pond...")
     try:
-        last_touch = False
         last_gesture_seq = 0
         while not stop_requested:
             t0 = time.time()
             if gesture_seq != last_gesture_seq:
                 last_gesture_seq = gesture_seq
-                if gesture_code == GESTURE_DOUBLE_TAP:
+                if gesture_code == GESTURE_SINGLE_TAP:
+                    pond.add_ripple(gesture_x, gesture_y)
+                elif gesture_code == GESTURE_DOUBLE_TAP:
                     pond.spawn_fish_from_gesture()
                 elif gesture_code == GESTURE_LONG_PRESS:
                     pond.feed_fish(gesture_x, gesture_y)
-
-            if is_touched and not last_touch:
-                pond.add_ripple(touch_x, touch_y)
-            last_touch = is_touched
                 
             pond.update()
             img = pond.render()

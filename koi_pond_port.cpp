@@ -42,6 +42,7 @@ constexpr const char* kTouchI2CPrimary = TOUCH_I2C_BUS;
 constexpr const char* kTouchI2CFallback = "/dev/i2c-3";
 constexpr std::uint8_t kTouchAddr = 0x15;
 constexpr std::uint32_t kSpiSpeedHz = SPI_SPEED_HZ;
+constexpr std::uint8_t kGestureSingleTap = 0x05;
 constexpr std::uint8_t kGestureDoubleTap = 0x0B;
 constexpr std::uint8_t kGestureLongPress = 0x0C;
 constexpr double kDoubleTapMaxGapSeconds = 0.35;
@@ -1644,6 +1645,15 @@ void touch_thread_func() {
                 const int y = ((data[4] & 0x0F) << 8) | data[5];
                 const int mapped_x = (kLcdWidth - 1) - x;
                 const double now = now_seconds();
+                if (!press_active && last_tap_time > 0.0 && now - last_tap_time > kDoubleTapMaxGapSeconds) {
+                    g_gesture_x.store(last_tap_x);
+                    g_gesture_y.store(last_tap_y);
+                    g_gesture_code.store(kGestureSingleTap);
+                    g_gesture_sequence.fetch_add(1);
+                    last_tap_time = -10.0;
+                    last_tap_x = -1;
+                    last_tap_y = -1;
+                }
                 if (data[1] > 0 || gesture == kGestureDoubleTap || gesture == kGestureLongPress) {
                     g_touch_x.store(mapped_x);
                     g_touch_y.store(y);
@@ -1657,12 +1667,18 @@ void touch_thread_func() {
                         g_gesture_code.store(gesture);
                         g_gesture_sequence.fetch_add(1);
                         last_double_tap_emit = now;
+                        last_tap_time = -10.0;
+                        last_tap_x = -1;
+                        last_tap_y = -1;
                     } else if (gesture == kGestureLongPress && now - last_long_press_emit > 1.10) {
                         g_gesture_x.store(mapped_x);
                         g_gesture_y.store(y);
                         g_gesture_code.store(gesture);
                         g_gesture_sequence.fetch_add(1);
                         last_long_press_emit = now;
+                        last_tap_time = -10.0;
+                        last_tap_x = -1;
+                        last_tap_y = -1;
                     }
 
                     if (data[1] > 0) {
@@ -1683,6 +1699,9 @@ void touch_thread_func() {
                                     g_gesture_code.store(kGestureLongPress);
                                     g_gesture_sequence.fetch_add(1);
                                     last_long_press_emit = now;
+                                    last_tap_time = -10.0;
+                                    last_tap_x = -1;
+                                    last_tap_y = -1;
                                 }
                                 long_press_emitted = true;
                             }
@@ -1758,7 +1777,6 @@ int koi_pond_run() {
         Pond pond;
         std::cout << "Running Koi pond..." << std::endl;
 
-        bool last_touch = false;
         std::uint64_t last_gesture_sequence = 0;
         while (!g_should_exit.load()) {
             const auto frame_start = std::chrono::steady_clock::now();
@@ -1766,18 +1784,14 @@ int koi_pond_run() {
             if (gesture_sequence != last_gesture_sequence) {
                 last_gesture_sequence = gesture_sequence;
                 const int gesture = g_gesture_code.load();
-                if (gesture == kGestureDoubleTap) {
+                if (gesture == kGestureSingleTap) {
+                    pond.add_ripple(static_cast<float>(g_gesture_x.load()), static_cast<float>(g_gesture_y.load()));
+                } else if (gesture == kGestureDoubleTap) {
                     pond.spawn_fish_from_gesture();
                 } else if (gesture == kGestureLongPress) {
                     pond.feed_fish(static_cast<float>(g_gesture_x.load()), static_cast<float>(g_gesture_y.load()), now_seconds());
                 }
             }
-
-            const bool is_touched = g_is_touched.load();
-            if (is_touched && !last_touch) {
-                pond.add_ripple(static_cast<float>(g_touch_x.load()), static_cast<float>(g_touch_y.load()));
-            }
-            last_touch = is_touched;
             pond.update(now_seconds());
             const auto image = pond.render();
             driver.draw_frame_rgb565(image);
