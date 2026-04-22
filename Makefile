@@ -1,10 +1,13 @@
 # Default compiler (dynamic drop-in replacement by Docker)
 CC ?= gcc
+CXX ?= g++
 PYTHON3 ?= python3
 COMMON_WARNINGS = -Wall -Wno-implicit-function-declaration
 CFLAGS = -O2 $(COMMON_WARNINGS)
+CXXFLAGS = -O2 -Wall -std=c++17
 LDFLAGS =
 LDLIBS = -lm -lz
+CPP_LDLIBS = -lm -lz -lpthread
 OLED_LUT_GENERATOR = generate_oled_lut_header.py
 OLED_LUT_HEADER = oled_build_lut.h
 OLED_CALIBRATION_FILE ?= oled_gamma_calibration.txt
@@ -32,7 +35,13 @@ PI_BINS = $(PI_SRCS:.c=)
 UNOQ_SRCS = unoq_st_dashboard/host/st_dashboard_stream.c unoq_st_smartwatch/host/st_smartwatch_stream.c
 UNOQ_BINS = $(UNOQ_SRCS:.c=)
 
-ALL_BINS = $(PI_BINS) $(UNOQ_BINS) badapple_waveshare
+KOI_POND_LIB_STATIC = libkoi_pond.a
+KOI_POND_LIB_SHARED = libkoi_pond.so
+KOI_POND_BINS = koi_pond_static koi_pond_dynamic
+KOI_POND_CORE_OBJS = koi_pond_port.o hal_gpio_spi.o
+KOI_POND_MAIN_OBJ = koi_pond_main.o
+
+ALL_BINS = $(PI_BINS) $(UNOQ_BINS) badapple_waveshare $(KOI_POND_LIB_STATIC) $(KOI_POND_LIB_SHARED) $(KOI_POND_BINS)
 
 # Auto-generate matching target binaries
 DEP_DIR = .deps
@@ -61,6 +70,13 @@ elevated: $(OLED_LUT_HEADER)
 hal_gpio_spi.o: hal_gpio_spi.c hal_gpio_spi.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+koi_pond_port.o: CXXFLAGS += -fPIC
+koi_pond_port.o: koi_pond_port.cpp koi_pond_port.h koi_pond_assets.h gpio_config.h hal_gpio_spi.h
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+koi_pond_main.o: koi_pond_main.cpp koi_pond_port.h
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
 lcd_gc9a01.o: lcd_gc9a01.c lcd_gc9a01.h gpio_config.h hal_gpio_spi.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -73,9 +89,21 @@ badapple_waveshare.o: badapple_waveshare.c lcd_gc9a01.h gpio_config.h hal_gpio_s
 
 all: pi unoq
 
-pi: $(PI_BINS) badapple_waveshare
+pi: $(PI_BINS) badapple_waveshare $(KOI_POND_LIB_STATIC) $(KOI_POND_LIB_SHARED) $(KOI_POND_BINS)
 
 unoq: $(UNOQ_BINS)
+
+$(KOI_POND_LIB_STATIC): $(KOI_POND_CORE_OBJS)
+	$(AR) rcs $@ $^
+
+$(KOI_POND_LIB_SHARED): $(KOI_POND_CORE_OBJS)
+	$(CXX) -shared $(LDFLAGS) -o $@ $^ $(CPP_LDLIBS)
+
+koi_pond_static: $(KOI_POND_MAIN_OBJ) $(KOI_POND_LIB_STATIC)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $(KOI_POND_MAIN_OBJ) -L. -lkoi_pond $(CPP_LDLIBS)
+
+koi_pond_dynamic: $(KOI_POND_MAIN_OBJ) $(KOI_POND_LIB_SHARED)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $(KOI_POND_MAIN_OBJ) -L. -lkoi_pond -Wl,-rpath,'$$ORIGIN' $(CPP_LDLIBS)
 
 $(DEP_DIR):
 	mkdir -p $@

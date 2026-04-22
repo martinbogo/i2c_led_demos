@@ -1,0 +1,1336 @@
+#include "koi_pond_port.h"
+
+#include "gpio_config.h"
+#include "hal_gpio_spi.h"
+#include "koi_pond_assets.h"
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <random>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
+namespace {
+
+constexpr int kLcdWidth = LCD_WIDTH;
+constexpr int kLcdHeight = LCD_HEIGHT;
+constexpr const char* kTouchI2CPrimary = "/dev/i2c-3";
+constexpr const char* kTouchI2CFallback = TOUCH_I2C_BUS;
+constexpr std::uint8_t kTouchAddr = 0x15;
+constexpr std::uint32_t kSpiSpeedHz = 80000000U;
+
+struct Vec2 {
+    float x = 0.0F;
+    float y = 0.0F;
+};
+
+struct Bounds {
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+};
+
+struct ColorRGB {
+    std::uint8_t r = 0;
+    std::uint8_t g = 0;
+    std::uint8_t b = 0;
+};
+
+struct ColorRGBA {
+    std::uint8_t r = 0;
+    std::uint8_t g = 0;
+    std::uint8_t b = 0;
+    std::uint8_t a = 0;
+};
+
+struct Ripple {
+    float x = 0.0F;
+    float y = 0.0F;
+    float radius = 0.0F;
+    float alpha = 1.0F;
+};
+
+struct TouchPoint {
+    Vec2 pos;
+    float life = 0.0F;
+};
+
+float clamp_float(float value, float lo, float hi) {
+    return std::max(lo, std::min(hi, value));
+}
+
+int clamp_int(int value, int lo, int hi) {
+    return std::max(lo, std::min(hi, value));
+}
+
+double now_seconds() {
+    using clock = std::chrono::steady_clock;
+    static const auto start = clock::now();
+    return std::chrono::duration<double>(clock::now() - start).count();
+}
+
+std::mt19937& global_rng() {
+    static thread_local std::mt19937 rng(std::random_device{}());
+    return rng;
+}
+
+float random_uniform(float lo, float hi) {
+    std::uniform_real_distribution<float> dist(lo, hi);
+    return dist(global_rng());
+}
+
+int random_int(int lo, int hi) {
+    std::uniform_int_distribution<int> dist(lo, hi);
+    return dist(global_rng());
+}
+
+bool random_chance(float probability) {
+    std::bernoulli_distribution dist(probability);
+    return dist(global_rng());
+}
+
+float random_gauss(float mean, float stddev) {
+    std::normal_distribution<float> dist(mean, stddev);
+    return dist(global_rng());
+}
+
+template <typename T>
+const T& random_choice(const std::vector<T>& items) {
+    return items[static_cast<std::size_t>(random_int(0, static_cast<int>(items.size()) - 1))];
+}
+
+class RGBImage {
+public:
+    int width = 0;
+    int height = 0;
+    std::vector<std::uint8_t> pixels;
+
+    RGBImage() = default;
+
+    RGBImage(int w, int h)
+        : width(w), height(h), pixels(static_cast<std::size_t>(w * h * 3), 0) {}
+
+    RGBImage(int w, int h, const std::vector<std::uint8_t>& data)
+        : width(w), height(h), pixels(data) {}
+
+    std::size_t index(int x, int y) const {
+        return static_cast<std::size_t>((y * width + x) * 3);
+    }
+
+    ColorRGB get(int x, int y) const {
+        const auto idx = index(x, y);
+        return {pixels[idx], pixels[idx + 1], pixels[idx + 2]};
+    }
+
+    void set(int x, int y, const ColorRGB& color) {
+        const auto idx = index(x, y);
+        pixels[idx] = color.r;
+        pixels[idx + 1] = color.g;
+        pixels[idx + 2] = color.b;
+    }
+};
+
+class RGBAImage {
+public:
+    int width = 0;
+    int height = 0;
+    std::vector<std::uint8_t> pixels;
+
+    RGBAImage() = default;
+
+    RGBAImage(int w, int h)
+        : width(w), height(h), pixels(static_cast<std::size_t>(w * h * 4), 0) {}
+
+    RGBAImage(int w, int h, const std::vector<std::uint8_t>& data)
+        : width(w), height(h), pixels(data) {}
+
+    std::size_t index(int x, int y) const {
+        return static_cast<std::size_t>((y * width + x) * 4);
+    }
+
+    ColorRGBA get(int x, int y) const {
+        const auto idx = index(x, y);
+        return {pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3]};
+    }
+
+    void set(int x, int y, const ColorRGBA& color) {
+        const auto idx = index(x, y);
+        pixels[idx] = color.r;
+        pixels[idx + 1] = color.g;
+        pixels[idx + 2] = color.b;
+        pixels[idx + 3] = color.a;
+    }
+};
+
+ColorRGBA bilinear_sample_rgba(const RGBAImage& image, float x, float y) {
+    if (x < 0.0F || y < 0.0F || x > static_cast<float>(image.width - 1) || y > static_cast<float>(image.height - 1)) {
+        return {0, 0, 0, 0};
+    }
+
+    const int x0 = clamp_int(static_cast<int>(std::floor(x)), 0, image.width - 1);
+    const int y0 = clamp_int(static_cast<int>(std::floor(y)), 0, image.height - 1);
+    const int x1 = clamp_int(x0 + 1, 0, image.width - 1);
+    const int y1 = clamp_int(y0 + 1, 0, image.height - 1);
+    const float tx = x - static_cast<float>(x0);
+    const float ty = y - static_cast<float>(y0);
+
+    const auto c00 = image.get(x0, y0);
+    const auto c10 = image.get(x1, y0);
+    const auto c01 = image.get(x0, y1);
+    const auto c11 = image.get(x1, y1);
+
+    auto interp = [&](std::uint8_t a, std::uint8_t b, std::uint8_t c, std::uint8_t d) -> std::uint8_t {
+        const float top = static_cast<float>(a) * (1.0F - tx) + static_cast<float>(b) * tx;
+        const float bottom = static_cast<float>(c) * (1.0F - tx) + static_cast<float>(d) * tx;
+        return static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(top * (1.0F - ty) + bottom * ty)), 0, 255));
+    };
+
+    return {
+        interp(c00.r, c10.r, c01.r, c11.r),
+        interp(c00.g, c10.g, c01.g, c11.g),
+        interp(c00.b, c10.b, c01.b, c11.b),
+        interp(c00.a, c10.a, c01.a, c11.a),
+    };
+}
+
+RGBAImage resize_rgba(const RGBAImage& src, int new_w, int new_h) {
+    RGBAImage out(new_w, new_h);
+    if (new_w <= 0 || new_h <= 0) {
+        return out;
+    }
+
+    const float scale_x = static_cast<float>(src.width) / static_cast<float>(new_w);
+    const float scale_y = static_cast<float>(src.height) / static_cast<float>(new_h);
+    for (int y = 0; y < new_h; ++y) {
+        for (int x = 0; x < new_w; ++x) {
+            const float src_x = (static_cast<float>(x) + 0.5F) * scale_x - 0.5F;
+            const float src_y = (static_cast<float>(y) + 0.5F) * scale_y - 0.5F;
+            out.set(x, y, bilinear_sample_rgba(src, src_x, src_y));
+        }
+    }
+    return out;
+}
+
+RGBImage copy_rgb_from_asset(int w, int h, const std::uint8_t* data, std::size_t size) {
+    return RGBImage(w, h, std::vector<std::uint8_t>(data, data + size));
+}
+
+RGBAImage copy_rgba_from_asset(int w, int h, const std::uint8_t* data, std::size_t size) {
+    return RGBAImage(w, h, std::vector<std::uint8_t>(data, data + size));
+}
+
+RGBAImage rotate_rgba_expand(const RGBAImage& src, float degrees) {
+    const float radians = degrees * static_cast<float>(M_PI) / 180.0F;
+    const float cs = std::cos(radians);
+    const float sn = std::sin(radians);
+    const float cx = static_cast<float>(src.width) * 0.5F;
+    const float cy = static_cast<float>(src.height) * 0.5F;
+
+    const std::array<Vec2, 4> corners = {{{0.0F, 0.0F}, {static_cast<float>(src.width), 0.0F}, {0.0F, static_cast<float>(src.height)}, {static_cast<float>(src.width), static_cast<float>(src.height)}}};
+    float min_x = std::numeric_limits<float>::max();
+    float max_x = std::numeric_limits<float>::lowest();
+    float min_y = std::numeric_limits<float>::max();
+    float max_y = std::numeric_limits<float>::lowest();
+
+    for (const auto& corner : corners) {
+        const float dx = corner.x - cx;
+        const float dy = corner.y - cy;
+        const float rx = dx * cs - dy * sn;
+        const float ry = dx * sn + dy * cs;
+        min_x = std::min(min_x, rx);
+        max_x = std::max(max_x, rx);
+        min_y = std::min(min_y, ry);
+        max_y = std::max(max_y, ry);
+    }
+
+    const int out_w = std::max(1, static_cast<int>(std::ceil(max_x - min_x)));
+    const int out_h = std::max(1, static_cast<int>(std::ceil(max_y - min_y)));
+    const float out_cx = static_cast<float>(out_w) * 0.5F;
+    const float out_cy = static_cast<float>(out_h) * 0.5F;
+
+    RGBAImage out(out_w, out_h);
+    for (int y = 0; y < out_h; ++y) {
+        for (int x = 0; x < out_w; ++x) {
+            const float dx = static_cast<float>(x) - out_cx;
+            const float dy = static_cast<float>(y) - out_cy;
+            const float src_dx = dx * cs + dy * sn;
+            const float src_dy = -dx * sn + dy * cs;
+            const float src_x = src_dx + cx;
+            const float src_y = src_dy + cy;
+            out.set(x, y, bilinear_sample_rgba(src, src_x, src_y));
+        }
+    }
+    return out;
+}
+
+void alpha_blend_pixel(RGBImage& dst, int x, int y, const ColorRGBA& src) {
+    if (x < 0 || y < 0 || x >= dst.width || y >= dst.height || src.a == 0) {
+        return;
+    }
+    const auto idx = dst.index(x, y);
+    const float alpha = static_cast<float>(src.a) / 255.0F;
+    dst.pixels[idx] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(dst.pixels[idx] * (1.0F - alpha) + src.r * alpha)), 0, 255));
+    dst.pixels[idx + 1] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(dst.pixels[idx + 1] * (1.0F - alpha) + src.g * alpha)), 0, 255));
+    dst.pixels[idx + 2] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(dst.pixels[idx + 2] * (1.0F - alpha) + src.b * alpha)), 0, 255));
+}
+
+void composite_rgba_over_rgb(RGBImage& dst, const RGBAImage& overlay) {
+    for (int y = 0; y < dst.height; ++y) {
+        for (int x = 0; x < dst.width; ++x) {
+            alpha_blend_pixel(dst, x, y, overlay.get(x, y));
+        }
+    }
+}
+
+void composite_rgba_over_rgb_at(RGBImage& dst, const RGBAImage& overlay, int ox, int oy) {
+    for (int y = 0; y < overlay.height; ++y) {
+        for (int x = 0; x < overlay.width; ++x) {
+            alpha_blend_pixel(dst, ox + x, oy + y, overlay.get(x, y));
+        }
+    }
+}
+
+void paste_rgba(RGBImage& dst, const RGBAImage& sprite, int ox, int oy) {
+    composite_rgba_over_rgb_at(dst, sprite, ox, oy);
+}
+
+void set_rgba_overwrite(RGBAImage& image, int x, int y, const ColorRGBA& color) {
+    if (x < 0 || y < 0 || x >= image.width || y >= image.height || color.a == 0) {
+        return;
+    }
+    image.set(x, y, color);
+}
+
+void draw_filled_ellipse(RGBAImage& image, float left, float top, float right, float bottom, const ColorRGBA& color) {
+    const float cx = (left + right) * 0.5F;
+    const float cy = (top + bottom) * 0.5F;
+    const float rx = std::max(0.5F, (right - left) * 0.5F);
+    const float ry = std::max(0.5F, (bottom - top) * 0.5F);
+    const int x0 = clamp_int(static_cast<int>(std::floor(left)), 0, image.width - 1);
+    const int x1 = clamp_int(static_cast<int>(std::ceil(right)), 0, image.width - 1);
+    const int y0 = clamp_int(static_cast<int>(std::floor(top)), 0, image.height - 1);
+    const int y1 = clamp_int(static_cast<int>(std::ceil(bottom)), 0, image.height - 1);
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            const float dx = (static_cast<float>(x) + 0.5F - cx) / rx;
+            const float dy = (static_cast<float>(y) + 0.5F - cy) / ry;
+            if ((dx * dx) + (dy * dy) <= 1.0F) {
+                set_rgba_overwrite(image, x, y, color);
+            }
+        }
+    }
+}
+
+bool point_in_polygon(const std::vector<Vec2>& polygon, float px, float py) {
+    bool inside = false;
+    for (std::size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+        const auto& pi = polygon[i];
+        const auto& pj = polygon[j];
+        const bool intersect = ((pi.y > py) != (pj.y > py)) &&
+            (px < (pj.x - pi.x) * (py - pi.y) / ((pj.y - pi.y) + 1.0e-6F) + pi.x);
+        if (intersect) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+void draw_filled_polygon(RGBAImage& image, const std::vector<Vec2>& polygon, const ColorRGBA& color) {
+    if (polygon.size() < 3) {
+        return;
+    }
+    float min_x = std::numeric_limits<float>::max();
+    float min_y = std::numeric_limits<float>::max();
+    float max_x = std::numeric_limits<float>::lowest();
+    float max_y = std::numeric_limits<float>::lowest();
+    for (const auto& point : polygon) {
+        min_x = std::min(min_x, point.x);
+        min_y = std::min(min_y, point.y);
+        max_x = std::max(max_x, point.x);
+        max_y = std::max(max_y, point.y);
+    }
+    const int x0 = clamp_int(static_cast<int>(std::floor(min_x)), 0, image.width - 1);
+    const int x1 = clamp_int(static_cast<int>(std::ceil(max_x)), 0, image.width - 1);
+    const int y0 = clamp_int(static_cast<int>(std::floor(min_y)), 0, image.height - 1);
+    const int y1 = clamp_int(static_cast<int>(std::ceil(max_y)), 0, image.height - 1);
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            if (point_in_polygon(polygon, static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F)) {
+                set_rgba_overwrite(image, x, y, color);
+            }
+        }
+    }
+}
+
+void draw_disc(RGBAImage& image, float cx, float cy, float radius, const ColorRGBA& color) {
+    draw_filled_ellipse(image, cx - radius, cy - radius, cx + radius, cy + radius, color);
+}
+
+[[maybe_unused]] void draw_line(RGBAImage& image, float x0, float y0, float x1, float y1, float width, const ColorRGBA& color) {
+    const float dx = x1 - x0;
+    const float dy = y1 - y0;
+    const float length = std::max(1.0F, std::sqrt(dx * dx + dy * dy));
+    const int steps = std::max(1, static_cast<int>(std::ceil(length)));
+    const float radius = std::max(0.5F, width * 0.5F);
+    for (int i = 0; i <= steps; ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(steps);
+        draw_disc(image, x0 + dx * t, y0 + dy * t, radius, color);
+    }
+}
+
+ColorRGBA to_rgba(const ColorRGB& color, std::uint8_t alpha = 255) {
+    return {color.r, color.g, color.b, alpha};
+}
+
+ColorRGB clamp_color(const std::array<int, 3>& color) {
+    return {
+        static_cast<std::uint8_t>(clamp_int(color[0], 0, 255)),
+        static_cast<std::uint8_t>(clamp_int(color[1], 0, 255)),
+        static_cast<std::uint8_t>(clamp_int(color[2], 0, 255)),
+    };
+}
+
+class WaveshareDisplayDriver {
+public:
+    explicit WaveshareDisplayDriver(std::uint32_t spi_speed_hz)
+        : spi_speed_hz_(spi_speed_hz) {}
+
+    ~WaveshareDisplayDriver() {
+        cleanup();
+    }
+
+    void init() {
+        if (initialized_) {
+            return;
+        }
+        if (hal_gpio_init() < 0) {
+            throw std::runtime_error("Failed to initialize GPIO");
+        }
+        if (hal_spi_init(SPI_DEVICE, spi_speed_hz_, SPI_MODE) < 0) {
+            throw std::runtime_error("Failed to initialize SPI");
+        }
+        hal_gpio_set_mode(LCD_CS_GPIO, GPIO_MODE_OUT);
+        hal_gpio_set_mode(LCD_DC_GPIO, GPIO_MODE_OUT);
+        hal_gpio_set_mode(LCD_RST_GPIO, GPIO_MODE_OUT);
+        hal_gpio_set_mode(LCD_BL_GPIO, GPIO_MODE_OUT);
+
+        gpio_set(LCD_CS_GPIO, true);
+        gpio_set(LCD_DC_GPIO, false);
+        set_backlight(false);
+
+        gpio_set(LCD_RST_GPIO, false);
+        hal_delay_ms(20);
+        gpio_set(LCD_RST_GPIO, true);
+        hal_delay_ms(120);
+
+        write_command(0x01);
+        hal_delay_ms(150);
+        write_command(0x11);
+        hal_delay_ms(120);
+        run_init_sequence();
+        write_command(0x21);
+        hal_delay_ms(10);
+        write_command(0x29);
+        hal_delay_ms(20);
+        set_backlight(true);
+        hal_delay_ms(100);
+        initialized_ = true;
+    }
+
+    void draw_frame_rgb565(const std::vector<std::uint16_t>& frame) {
+        if (frame.size() != static_cast<std::size_t>(kLcdWidth * kLcdHeight)) {
+            throw std::runtime_error("Unexpected frame size");
+        }
+        set_address_window(0, 0, kLcdWidth - 1, kLcdHeight - 1);
+        write_command(0x2C);
+        std::vector<std::uint8_t> bytes(frame.size() * 2U);
+        for (std::size_t i = 0; i < frame.size(); ++i) {
+            bytes[i * 2U] = static_cast<std::uint8_t>((frame[i] >> 8U) & 0xFFU);
+            bytes[i * 2U + 1U] = static_cast<std::uint8_t>(frame[i] & 0xFFU);
+        }
+        write_data(bytes.data(), bytes.size());
+    }
+
+    void cleanup() {
+        if (!initialized_) {
+            return;
+        }
+        set_backlight(false);
+        write_command(0x28);
+        hal_delay_ms(10);
+        write_command(0x10);
+        hal_delay_ms(120);
+        hal_spi_close();
+        hal_gpio_cleanup();
+        initialized_ = false;
+    }
+
+private:
+    std::uint32_t spi_speed_hz_ = 0;
+    bool initialized_ = false;
+
+    void gpio_set(int pin, bool high) {
+        hal_gpio_write(static_cast<std::uint32_t>(pin), high ? GPIO_HIGH : GPIO_LOW);
+    }
+
+    void set_backlight(bool enabled) {
+        gpio_set(LCD_BL_GPIO, enabled);
+    }
+
+    void write_command(std::uint8_t cmd) {
+        gpio_set(LCD_DC_GPIO, false);
+        gpio_set(LCD_CS_GPIO, false);
+        hal_spi_write(&cmd, 1);
+        gpio_set(LCD_CS_GPIO, true);
+        hal_delay_us(1000);
+    }
+
+    void write_data(const std::uint8_t* data, std::size_t len) {
+        gpio_set(LCD_DC_GPIO, true);
+        gpio_set(LCD_CS_GPIO, false);
+        hal_spi_write(data, len);
+        gpio_set(LCD_CS_GPIO, true);
+    }
+
+    void write_cmd_data(std::uint8_t cmd, const std::initializer_list<std::uint8_t>& bytes) {
+        write_command(cmd);
+        if (!bytes.size()) {
+            return;
+        }
+        std::vector<std::uint8_t> tmp(bytes.begin(), bytes.end());
+        write_data(tmp.data(), tmp.size());
+    }
+
+    void set_address_window(int x1, int y1, int x2, int y2) {
+        write_cmd_data(0x2A, {
+            static_cast<std::uint8_t>((x1 >> 8) & 0xFF), static_cast<std::uint8_t>(x1 & 0xFF),
+            static_cast<std::uint8_t>((x2 >> 8) & 0xFF), static_cast<std::uint8_t>(x2 & 0xFF),
+        });
+        write_cmd_data(0x2B, {
+            static_cast<std::uint8_t>((y1 >> 8) & 0xFF), static_cast<std::uint8_t>(y1 & 0xFF),
+            static_cast<std::uint8_t>((y2 >> 8) & 0xFF), static_cast<std::uint8_t>(y2 & 0xFF),
+        });
+    }
+
+    void run_init_sequence() {
+        const std::vector<std::pair<std::uint8_t, std::vector<std::uint8_t>>> init = {
+            {0xEF, {}}, {0xEB, {0x14}}, {0xFE, {}}, {0xEF, {}}, {0xEB, {0x14}},
+            {0x84, {0x40}}, {0x85, {0xFF}}, {0x86, {0xFF}}, {0x87, {0xFF}},
+            {0x88, {0x0A}}, {0x89, {0x21}}, {0x8A, {0x00}}, {0x8B, {0x80}},
+            {0x8C, {0x01}}, {0x8D, {0x01}}, {0x8E, {0xFF}}, {0x8F, {0xFF}},
+            {0xB6, {0x00, 0x00}}, {0x36, {0x08}}, {0x3A, {0x05}},
+            {0x90, {0x08, 0x08, 0x08, 0x08}}, {0xBD, {0x06}}, {0xBC, {0x00}},
+            {0xFF, {0x60, 0x01, 0x04}}, {0xC3, {0x13}}, {0xC4, {0x13}},
+            {0xC9, {0x22}}, {0xBE, {0x11}}, {0xE1, {0x10, 0x0E}},
+            {0xDF, {0x21, 0x0C, 0x02}}, {0xF0, {0x45, 0x09, 0x08, 0x08, 0x26, 0x2A}},
+            {0xF1, {0x43, 0x70, 0x72, 0x36, 0x37, 0x6F}}, {0xF2, {0x45, 0x09, 0x08, 0x08, 0x26, 0x2A}},
+            {0xF3, {0x43, 0x70, 0x72, 0x36, 0x37, 0x6F}}, {0xED, {0x1B, 0x0B}},
+            {0xAE, {0x77}}, {0xCD, {0x63}}, {0x70, {0x07, 0x07, 0x04, 0x0E, 0x0F, 0x09, 0x07, 0x08, 0x03}},
+            {0xE8, {0x34}}, {0x62, {0x18, 0x0D, 0x71, 0xED, 0x70, 0x70, 0x18, 0x0F, 0x71, 0xEF, 0x70, 0x70}},
+            {0x63, {0x18, 0x11, 0x71, 0xF1, 0x70, 0x70, 0x18, 0x13, 0x71, 0xF3, 0x70, 0x70}},
+            {0x64, {0x28, 0x29, 0xF1, 0x01, 0xF1, 0x00, 0x07}},
+            {0x66, {0x3C, 0x00, 0xCD, 0x67, 0x45, 0x45, 0x10, 0x00, 0x00, 0x00}},
+            {0x67, {0x00, 0x3C, 0x00, 0x00, 0x00, 0x01, 0x54, 0x10, 0x32, 0x98}},
+            {0x74, {0x10, 0x85, 0x80, 0x00, 0x00, 0x4E, 0x00}},
+            {0x98, {0x3E, 0x07}},
+        };
+        for (const auto& [cmd, data] : init) {
+            write_command(cmd);
+            if (!data.empty()) {
+                write_data(data.data(), data.size());
+            }
+        }
+    }
+};
+
+class PondAssets {
+public:
+    std::vector<RGBAImage> lily_sprites;
+    RGBImage bg;
+    std::vector<float> grid_x;
+    std::vector<float> grid_y;
+
+    PondAssets()
+        : bg(copy_rgb_from_asset(
+            koi_pond_assets::POND_BACKGROUND_WIDTH,
+            koi_pond_assets::POND_BACKGROUND_HEIGHT,
+            koi_pond_assets::POND_BACKGROUND_DATA.data(),
+            koi_pond_assets::POND_BACKGROUND_DATA.size())) {
+        lily_sprites.push_back(copy_rgba_from_asset(
+            koi_pond_assets::LILYPAD_1_WIDTH,
+            koi_pond_assets::LILYPAD_1_HEIGHT,
+            koi_pond_assets::LILYPAD_1_DATA.data(),
+            koi_pond_assets::LILYPAD_1_DATA.size()));
+        lily_sprites.push_back(copy_rgba_from_asset(
+            koi_pond_assets::LILYPAD_2_WIDTH,
+            koi_pond_assets::LILYPAD_2_HEIGHT,
+            koi_pond_assets::LILYPAD_2_DATA.data(),
+            koi_pond_assets::LILYPAD_2_DATA.size()));
+        lily_sprites.push_back(copy_rgba_from_asset(
+            koi_pond_assets::LILYPAD_3_WIDTH,
+            koi_pond_assets::LILYPAD_3_HEIGHT,
+            koi_pond_assets::LILYPAD_3_DATA.data(),
+            koi_pond_assets::LILYPAD_3_DATA.size()));
+        grid_x.resize(static_cast<std::size_t>(kLcdWidth * kLcdHeight));
+        grid_y.resize(static_cast<std::size_t>(kLcdWidth * kLcdHeight));
+        for (int y = 0; y < kLcdHeight; ++y) {
+            for (int x = 0; x < kLcdWidth; ++x) {
+                const auto idx = static_cast<std::size_t>(y * kLcdWidth + x);
+                grid_x[idx] = static_cast<float>(x);
+                grid_y[idx] = static_cast<float>(y);
+            }
+        }
+    }
+};
+
+PondAssets* g_assets = nullptr;
+
+class Lilypad {
+public:
+    Vec2 pos;
+    RGBAImage sprite;
+
+    Lilypad(float x, float y, float rot, float scale)
+        : pos{x, y} {
+        const auto& base = random_choice(g_assets->lily_sprites);
+        const int fin_w = std::max(1, static_cast<int>(std::lround(base.width * 0.4F * scale)));
+        const int fin_h = std::max(1, static_cast<int>(std::lround(base.height * 0.4F * scale)));
+        sprite = resize_rgba(base, fin_w, fin_h);
+        if (std::fabs(rot) > 0.01F) {
+            sprite = rotate_rgba_expand(sprite, rot);
+        }
+    }
+
+    Bounds bounds() const {
+        const int px = static_cast<int>(std::lround(pos.x - sprite.width / 2.0F));
+        const int py = static_cast<int>(std::lround(pos.y - sprite.height / 2.0F));
+        return {px, py, sprite.width, sprite.height};
+    }
+
+    void draw(RGBImage& img) const {
+        const auto b = bounds();
+        paste_rgba(img, sprite, b.x, b.y);
+    }
+};
+
+struct TextureMark {
+    int segment = 0;
+    float side = 0.0F;
+    float along = 0.0F;
+    float lateral = 0.0F;
+    float radius_scale = 0.0F;
+    float stretch = 0.0F;
+    ColorRGB color;
+    std::uint8_t alpha = 0;
+};
+
+enum class HidingState {
+    Normal,
+    Hiding,
+    Hidden,
+    Returning,
+};
+
+class Koi {
+public:
+    Vec2 pos;
+    HidingState hiding_state = HidingState::Normal;
+    double hide_timer = 0.0;
+    Vec2 hide_target{};
+    float scared = 0.0F;
+    float swim_speed_trait = 0.0F;
+    bool offscreen_replacement_checked = false;
+    double offscreen_since = -1.0;
+    Vec2 vel{};
+    int num_chunks = 10;
+    float segment_dist = 3.5F;
+    std::vector<float> radii;
+    ColorRGB color;
+    std::vector<TextureMark> texture_marks;
+    std::vector<Vec2> segments;
+
+    static float sample_swim_speed_trait() {
+        float trait = 5.0F;
+        for (int i = 0; i < 12; ++i) {
+            trait = random_gauss(5.0F, 1.0F);
+            if (trait >= 0.0F && trait <= 9.0F) {
+                return trait;
+            }
+        }
+        return clamp_float(trait, 0.0F, 9.0F);
+    }
+
+    Koi(float x, float y)
+        : pos{x, y}, scared(random_uniform(0.0F, 9.0F)), swim_speed_trait(sample_swim_speed_trait()) {
+        radii = {7.0F, 8.0F, 7.5F, 6.0F, 5.0F, 4.0F, 3.0F, 2.0F, 1.0F, 0.5F};
+        const std::vector<ColorRGB> colors = {
+            {255, 90, 40}, {220, 220, 220}, {255, 170, 50}, {240, 100, 40},
+        };
+        color = random_choice(colors);
+        vel = {random_uniform(-1.0F, 1.0F), random_uniform(-1.0F, 1.0F)};
+        normalize(vel);
+        vel.x *= 2.0F;
+        vel.y *= 2.0F;
+        texture_marks = generate_texture_marks();
+        segments.assign(static_cast<std::size_t>(num_chunks), {x, y});
+    }
+
+    static float normalize(Vec2& v) {
+        const float mag = std::sqrt(v.x * v.x + v.y * v.y);
+        if (mag > 0.0F) {
+            v.x /= mag;
+            v.y /= mag;
+        }
+        return mag;
+    }
+
+    float scale_from_trait(float slow_value, float baseline_value, float fast_value) const {
+        const float trait = clamp_float(swim_speed_trait, 0.0F, 9.0F);
+        if (trait <= 5.0F) {
+            const float blend = trait / 5.0F;
+            return slow_value + (baseline_value - slow_value) * blend;
+        }
+        const float blend = (trait - 5.0F) / 4.0F;
+        return baseline_value + (fast_value - baseline_value) * blend;
+    }
+
+    float cruise_speed() const { return scale_from_trait(1.0F, 2.5F, 3.8F); }
+    float cruise_turn_span() const { return scale_from_trait(0.10F, 0.40F, 0.72F); }
+    float hide_speed() const { return scale_from_trait(0.28F, 0.60F, 1.00F); }
+    float hide_turn_span() const { return scale_from_trait(0.18F, 0.60F, 0.95F); }
+    float return_speed() const { return scale_from_trait(0.55F, 1.00F, 1.55F); }
+    float return_turn_span() const { return scale_from_trait(0.18F, 0.50F, 0.80F); }
+    float panic_speed_multiplier() const { return scale_from_trait(0.82F, 1.00F, 1.18F); }
+    float panic_turn_response() const { return scale_from_trait(0.14F, 0.20F, 0.28F); }
+
+    std::pair<float, float> free_swim_boundary_acceleration(float force_scale = 0.06F, float slack = 36.0F) const {
+        float ax = 0.0F;
+        float ay = 0.0F;
+        if (pos.x < -slack) {
+            ax += (-slack - pos.x) * force_scale;
+        } else if (pos.x > kLcdWidth + slack) {
+            ax -= (pos.x - (kLcdWidth + slack)) * force_scale;
+        }
+        if (pos.y < -slack) {
+            ay += (-slack - pos.y) * force_scale;
+        } else if (pos.y > kLcdHeight + slack) {
+            ay -= (pos.y - (kLcdHeight + slack)) * force_scale;
+        }
+        return {ax, ay};
+    }
+
+    std::vector<TextureMark> generate_texture_marks() {
+        const std::vector<ColorRGB> palette = {
+            {248, 244, 232}, {255, 188, 82}, {255, 132, 70}, {234, 84, 48},
+            {76, 56, 48}, {34, 30, 28}, {232, 210, 120},
+        };
+        std::vector<TextureMark> marks;
+        const int mark_count = random_int(0, 3);
+        const int body_start = 2;
+        const int body_end = std::max(body_start, num_chunks - 4);
+        for (int i = 0; i < mark_count; ++i) {
+            TextureMark mark;
+            mark.segment = random_int(body_start, body_end);
+            mark.side = random_chance(0.5F) ? -1.0F : 1.0F;
+            mark.along = random_uniform(-0.28F, 0.15F);
+            mark.lateral = random_uniform(0.10F, 0.42F);
+            mark.radius_scale = std::max(0.16F, random_uniform(0.22F, 0.48F) * (1.0F - mark.segment / static_cast<float>(num_chunks + 2)));
+            mark.stretch = random_uniform(0.8F, 1.35F);
+            mark.color = random_choice(palette);
+            mark.alpha = static_cast<std::uint8_t>(random_int(115, 205));
+            marks.push_back(mark);
+        }
+        return marks;
+    }
+
+    void draw_texture(RGBAImage& layer) const {
+        if (segments.size() < 2) {
+            return;
+        }
+        for (const auto& mark : texture_marks) {
+            const int seg_idx = std::min(mark.segment, num_chunks - 2);
+            const auto& seg = segments[static_cast<std::size_t>(seg_idx)];
+            const auto& next = segments[static_cast<std::size_t>(seg_idx + 1)];
+            const float dx = next.x - seg.x;
+            const float dy = next.y - seg.y;
+            const float mag = std::sqrt(dx * dx + dy * dy);
+            float tangent_x = 0.0F;
+            float tangent_y = 0.0F;
+            if (mag < 0.001F) {
+                const float angle = std::atan2(vel.y, vel.x);
+                tangent_x = std::cos(angle);
+                tangent_y = std::sin(angle);
+            } else {
+                tangent_x = dx / mag;
+                tangent_y = dy / mag;
+            }
+            const float normal_x = -tangent_y;
+            const float normal_y = tangent_x;
+            const float body_r = radii[static_cast<std::size_t>(seg_idx)];
+            const float center_x = seg.x + tangent_x * body_r * mark.along + normal_x * body_r * mark.lateral * mark.side;
+            const float center_y = seg.y + tangent_y * body_r * mark.along + normal_y * body_r * mark.lateral * mark.side;
+            const float rx = std::max(1.2F, body_r * mark.radius_scale * mark.stretch);
+            const float ry = std::max(1.0F, body_r * mark.radius_scale);
+            draw_filled_ellipse(layer, center_x - rx, center_y - ry, center_x + rx, center_y + ry, {mark.color.r, mark.color.g, mark.color.b, mark.alpha});
+        }
+    }
+
+    void update(const std::vector<Vec2>& flee_points, const std::vector<Lilypad>& lilypads, double now) {
+        float speed = cruise_speed();
+        float ax = 0.0F;
+        float ay = 0.0F;
+
+        if (!flee_points.empty() && (hiding_state == HidingState::Normal || hiding_state == HidingState::Returning)) {
+            hiding_state = HidingState::Hiding;
+            const auto touch = flee_points.front();
+            if (scared <= 1.0F) {
+                hide_target = {touch.x + random_uniform(-10.0F, 10.0F), touch.y + random_uniform(-10.0F, 10.0F)};
+            } else if (scared < 5.0F) {
+                const float angle = std::atan2(pos.y - touch.y, pos.x - touch.x) + random_uniform(-0.5F, 0.5F);
+                const float dist = 60.0F + scared * 10.0F;
+                hide_target.x = clamp_float(pos.x + std::cos(angle) * dist, 20.0F, static_cast<float>(kLcdWidth - 20));
+                hide_target.y = clamp_float(pos.y + std::sin(angle) * dist, 20.0F, static_cast<float>(kLcdHeight - 20));
+            } else {
+                if (!lilypads.empty() && random_uniform(0.0F, 1.0F) > 0.3F) {
+                    const auto& pad = lilypads[static_cast<std::size_t>(random_int(0, static_cast<int>(lilypads.size()) - 1))];
+                    hide_target = {pad.pos.x + random_uniform(-10.0F, 10.0F), pad.pos.y + random_uniform(-10.0F, 10.0F)};
+                } else {
+                    const float angle = std::atan2(pos.y - touch.y, pos.x - touch.x) + random_uniform(-0.5F, 0.5F);
+                    const float dist = (kLcdWidth / 2.0F) + (scared / 9.0F) * static_cast<float>(kLcdWidth);
+                    hide_target = {pos.x + std::cos(angle) * dist, pos.y + std::sin(angle) * dist};
+                }
+            }
+        }
+
+        if (hiding_state == HidingState::Normal) {
+            const float wander_angle = random_uniform(-cruise_turn_span(), cruise_turn_span());
+            const float current_angle = std::atan2(vel.y, vel.x);
+            const float new_angle = current_angle + wander_angle;
+            const auto [bound_ax, bound_ay] = free_swim_boundary_acceleration(0.065F, 38.0F);
+            ax += bound_ax;
+            ay += bound_ay;
+            vel = {std::cos(new_angle) * speed + ax, std::sin(new_angle) * speed + ay};
+        } else if (hiding_state == HidingState::Hiding) {
+            speed = (3.0F + (scared / 9.0F) * 5.0F) * panic_speed_multiplier();
+            const float dx = hide_target.x - pos.x;
+            const float dy = hide_target.y - pos.y;
+            const float dist = std::sqrt(dx * dx + dy * dy);
+            if (dist < 20.0F) {
+                hiding_state = HidingState::Hidden;
+                hide_timer = now + (scared / 9.0F) * 10.0;
+                speed = hide_speed();
+            } else {
+                const float tx = dx / dist;
+                const float ty = dy / dist;
+                const float current_angle = std::atan2(vel.y, vel.x);
+                const float target_angle = std::atan2(ty, tx);
+                const float diff = std::fmod((target_angle - current_angle + static_cast<float>(M_PI) * 3.0F), static_cast<float>(M_PI) * 2.0F) - static_cast<float>(M_PI);
+                const float new_angle = current_angle + diff * panic_turn_response();
+                vel = {std::cos(new_angle) * speed, std::sin(new_angle) * speed};
+            }
+        } else if (hiding_state == HidingState::Hidden) {
+            speed = hide_speed();
+            const float wander_angle = random_uniform(-hide_turn_span(), hide_turn_span());
+            const float current_angle = std::atan2(vel.y, vel.x);
+            const float new_angle = current_angle + wander_angle;
+            const float dx = hide_target.x - pos.x;
+            const float dy = hide_target.y - pos.y;
+            const float dist_to_target = std::sqrt(dx * dx + dy * dy);
+            if (dist_to_target > 15.0F) {
+                ax += (dx / std::max(1.0F, dist_to_target)) * 0.1F;
+                ay += (dy / std::max(1.0F, dist_to_target)) * 0.1F;
+            }
+            vel = {std::cos(new_angle) * speed + ax, std::sin(new_angle) * speed + ay};
+            if (now > hide_timer) {
+                hiding_state = HidingState::Returning;
+                speed = return_speed();
+            }
+        } else {
+            speed = return_speed();
+            const float wander_angle = random_uniform(-return_turn_span(), return_turn_span());
+            const float current_angle = std::atan2(vel.y, vel.x);
+            const float new_angle = current_angle + wander_angle;
+            const float cx = kLcdWidth * 0.5F;
+            const float cy = kLcdHeight * 0.5F;
+            const float dx = cx - pos.x;
+            const float dy = cy - pos.y;
+            const float dist_center = std::sqrt(dx * dx + dy * dy);
+            const auto [bound_ax, bound_ay] = free_swim_boundary_acceleration(0.11F, 28.0F);
+            ax += bound_ax + dx * 0.01F;
+            ay += bound_ay + dy * 0.01F;
+            if (pos.x >= 0.0F && pos.x <= kLcdWidth && pos.y >= 0.0F && pos.y <= kLcdHeight && dist_center < kLcdWidth / 2.0F - 50.0F) {
+                hiding_state = HidingState::Normal;
+            }
+            vel = {std::cos(new_angle) * speed + ax, std::sin(new_angle) * speed + ay};
+        }
+
+        if (speed > 0.0F) {
+            normalize(vel);
+            vel.x *= speed;
+            vel.y *= speed;
+            pos.x += vel.x;
+            pos.y += vel.y;
+            segments[0] = pos;
+            for (std::size_t i = 1; i < segments.size(); ++i) {
+                const float sdx = segments[i - 1].x - segments[i].x;
+                const float sdy = segments[i - 1].y - segments[i].y;
+                const float dist = std::sqrt(sdx * sdx + sdy * sdy);
+                if (dist > segment_dist) {
+                    segments[i].x += (sdx / dist) * (dist - segment_dist);
+                    segments[i].y += (sdy / dist) * (dist - segment_dist);
+                }
+            }
+        }
+    }
+
+    void draw_shape(
+        RGBAImage& layer,
+        const ColorRGBA& fill_color,
+        const Vec2& offset,
+        float body_scale,
+        float tail_scale,
+        float fin_scale,
+        bool draw_eyes,
+        const ColorRGBA& eye_color) const {
+        const auto& last = segments.back();
+        const auto& prev = segments[segments.size() - 2];
+        const float ang = std::atan2(last.y - prev.y, last.x - prev.x);
+        const float t_len = 14.0F * tail_scale;
+        const float t_spread = 0.5F;
+        const Vec2 last_pt{last.x + offset.x, last.y + offset.y};
+        std::vector<Vec2> tail = {
+            last_pt,
+            {last_pt.x + std::cos(ang - t_spread) * t_len, last_pt.y + std::sin(ang - t_spread) * t_len},
+            {last_pt.x + std::cos(ang) * (t_len * 0.3F), last_pt.y + std::sin(ang) * (t_len * 0.3F)},
+            {last_pt.x + std::cos(ang + t_spread) * t_len, last_pt.y + std::sin(ang + t_spread) * t_len},
+        };
+        draw_filled_polygon(layer, tail, fill_color);
+
+        const auto& f_seg = segments[2];
+        const auto& f_prev = segments[1];
+        const float f_ang = std::atan2(f_prev.y - f_seg.y, f_prev.x - f_seg.x);
+        const float flen = 10.0F * fin_scale;
+        const float f_width = 5.0F * fin_scale;
+        const Vec2 f_seg_pt{f_seg.x + offset.x, f_seg.y + offset.y};
+        const float base_radius = radii[2] * body_scale;
+
+        std::vector<Vec2> fin1 = {
+            f_seg_pt,
+            {f_seg_pt.x + std::cos(f_ang - static_cast<float>(M_PI) / 2.0F - 0.4F) * (base_radius + flen),
+             f_seg_pt.y + std::sin(f_ang - static_cast<float>(M_PI) / 2.0F - 0.4F) * (base_radius + flen)},
+            {f_seg_pt.x + std::cos(f_ang) * f_width, f_seg_pt.y + std::sin(f_ang) * f_width},
+        };
+        draw_filled_polygon(layer, fin1, fill_color);
+
+        std::vector<Vec2> fin2 = {
+            f_seg_pt,
+            {f_seg_pt.x + std::cos(f_ang + static_cast<float>(M_PI) / 2.0F + 0.4F) * (base_radius + flen),
+             f_seg_pt.y + std::sin(f_ang + static_cast<float>(M_PI) / 2.0F + 0.4F) * (base_radius + flen)},
+            {f_seg_pt.x + std::cos(f_ang) * f_width, f_seg_pt.y + std::sin(f_ang) * f_width},
+        };
+        draw_filled_polygon(layer, fin2, fill_color);
+
+        for (int i = num_chunks - 1; i >= 0; --i) {
+            const auto& seg = segments[static_cast<std::size_t>(i)];
+            const float r = radii[static_cast<std::size_t>(i)] * body_scale;
+            const float sx = seg.x + offset.x;
+            const float sy = seg.y + offset.y;
+            draw_filled_ellipse(layer, sx - r, sy - r, sx + r, sy + r, fill_color);
+            if (i == 0 && draw_eyes) {
+                const float h_ang = std::atan2(vel.y, vel.x);
+                const float ex1 = sx + std::cos(h_ang - static_cast<float>(M_PI) / 2.5F) * (r * 0.7F);
+                const float ey1 = sy + std::sin(h_ang - static_cast<float>(M_PI) / 2.5F) * (r * 0.7F);
+                const float ex2 = sx + std::cos(h_ang + static_cast<float>(M_PI) / 2.5F) * (r * 0.7F);
+                const float ey2 = sy + std::sin(h_ang + static_cast<float>(M_PI) / 2.5F) * (r * 0.7F);
+                draw_filled_ellipse(layer, ex1 - 1.5F, ey1 - 1.5F, ex1 + 1.5F, ey1 + 1.5F, eye_color);
+                draw_filled_ellipse(layer, ex2 - 1.5F, ey2 - 1.5F, ex2 + 1.5F, ey2 + 1.5F, eye_color);
+            }
+        }
+    }
+
+    void draw(RGBImage& img_bg) const {
+        RGBAImage shadow(img_bg.width, img_bg.height);
+        draw_shape(shadow, {10, 28, 22, 68}, {4.0F, 5.0F}, 1.08F, 0.96F, 0.88F, false, {0, 0, 0, 0});
+        composite_rgba_over_rgb(img_bg, shadow);
+        RGBAImage body(img_bg.width, img_bg.height);
+        draw_shape(body, to_rgba(color), {0.0F, 0.0F}, 1.0F, 1.0F, 1.0F, true, {0, 0, 0, 255});
+        draw_texture(body);
+        composite_rgba_over_rgb(img_bg, body);
+    }
+};
+
+class Pond {
+public:
+    std::vector<Lilypad> lilypads;
+    std::vector<Koi> fish;
+    std::vector<Ripple> ripples;
+    std::vector<TouchPoint> touch_points;
+    double start_time = now_seconds();
+
+    Pond() {
+        lilypads.emplace_back(40.0F, 40.0F, random_uniform(0.0F, 360.0F), 0.8F);
+        lilypads.emplace_back(200.0F, 60.0F, random_uniform(0.0F, 360.0F), 1.2F);
+        lilypads.emplace_back(50.0F, 200.0F, random_uniform(0.0F, 360.0F), 0.9F);
+        lilypads.emplace_back(180.0F, 190.0F, random_uniform(0.0F, 360.0F), 1.1F);
+        for (int i = 0; i < 6; ++i) {
+            fish.emplace_back(kLcdWidth * 0.5F + random_uniform(-50.0F, 50.0F), kLcdHeight * 0.5F + random_uniform(-50.0F, 50.0F));
+        }
+    }
+
+    Koi spawn_koi_from_offscreen() const {
+        const float margin = random_uniform(24.0F, 42.0F);
+        const int edge = random_int(0, 3);
+        float x = 0.0F;
+        float y = 0.0F;
+        if (edge == 0) {
+            x = -margin;
+            y = random_uniform(15.0F, kLcdHeight - 15.0F);
+        } else if (edge == 1) {
+            x = kLcdWidth + margin;
+            y = random_uniform(15.0F, kLcdHeight - 15.0F);
+        } else if (edge == 2) {
+            x = random_uniform(15.0F, kLcdWidth - 15.0F);
+            y = -margin;
+        } else {
+            x = random_uniform(15.0F, kLcdWidth - 15.0F);
+            y = kLcdHeight + margin;
+        }
+        Koi koi(x, y);
+        const float target_x = kLcdWidth * 0.5F + random_uniform(-40.0F, 40.0F);
+        const float target_y = kLcdHeight * 0.5F + random_uniform(-40.0F, 40.0F);
+        const float dx = target_x - x;
+        const float dy = target_y - y;
+        const float dist = std::sqrt(dx * dx + dy * dy);
+        if (dist > 0.001F) {
+            const float spawn_speed = koi.scale_from_trait(1.1F, 2.1F, 3.1F);
+            koi.vel = {(dx / dist) * spawn_speed, (dy / dist) * spawn_speed};
+        }
+        koi.pos = {x, y};
+        koi.segments.assign(static_cast<std::size_t>(koi.num_chunks), {x, y});
+        return koi;
+    }
+
+    bool should_replace_offscreen_koi(Koi& koi, double now) const {
+        constexpr float margin = 8.0F;
+        const bool outside = koi.pos.x < -margin || koi.pos.x > kLcdWidth + margin || koi.pos.y < -margin || koi.pos.y > kLcdHeight + margin;
+        if (!outside) {
+            koi.offscreen_since = -1.0;
+            koi.offscreen_replacement_checked = false;
+            return false;
+        }
+        if (koi.offscreen_since < 0.0) {
+            koi.offscreen_since = now;
+            return false;
+        }
+        if (now - koi.offscreen_since < 0.8) {
+            return false;
+        }
+        if (koi.offscreen_replacement_checked) {
+            return false;
+        }
+        koi.offscreen_replacement_checked = true;
+        return random_uniform(0.0F, 1.0F) < 0.1F;
+    }
+
+    void add_ripple(float x, float y) {
+        ripples.push_back({x, y, 0.0F, 1.0F});
+        touch_points.push_back({{x, y}, 0.5F});
+    }
+
+    void update(double now) {
+        std::vector<Vec2> active_touches;
+        active_touches.reserve(touch_points.size());
+        for (const auto& touch : touch_points) {
+            active_touches.push_back(touch.pos);
+        }
+
+        std::vector<Koi> updated;
+        updated.reserve(fish.size());
+        for (auto& koi : fish) {
+            koi.update(active_touches, lilypads, now);
+            if (should_replace_offscreen_koi(koi, now)) {
+                updated.push_back(spawn_koi_from_offscreen());
+            } else {
+                updated.push_back(koi);
+            }
+        }
+        fish = std::move(updated);
+
+        for (auto& ripple : ripples) {
+            ripple.radius += 2.0F;
+            ripple.alpha -= 0.02F;
+        }
+        ripples.erase(std::remove_if(ripples.begin(), ripples.end(), [](const Ripple& ripple) {
+            return ripple.alpha <= 0.0F;
+        }), ripples.end());
+
+        for (auto& touch : touch_points) {
+            touch.life -= 0.05F;
+        }
+        touch_points.erase(std::remove_if(touch_points.begin(), touch_points.end(), [](const TouchPoint& touch) {
+            return touch.life <= 0.0F;
+        }), touch_points.end());
+    }
+
+    RGBImage apply_floor_shimmer(const RGBImage& input, double now) const {
+        RGBImage out = input;
+        for (int y = 0; y < kLcdHeight; ++y) {
+            for (int x = 0; x < kLcdWidth; ++x) {
+                const auto idx = static_cast<std::size_t>(y * kLcdWidth + x);
+                const float xs = g_assets->grid_x[idx];
+                const float ys = g_assets->grid_y[idx];
+                const float radial_x = (xs - kLcdWidth * 0.5F) / (kLcdWidth * 0.56F);
+                const float radial_y = (ys - kLcdHeight * 0.5F) / (kLcdHeight * 0.56F);
+                const float radial_mask = clamp_float(1.0F - std::hypot(radial_x, radial_y), 0.0F, 1.0F);
+                const float depth_mask = 0.35F + 0.65F * clamp_float((ys - (kLcdHeight * 0.08F)) / (kLcdHeight * 0.92F), 0.0F, 1.0F);
+                const float shimmer_mask = clamp_float((radial_mask * 0.75F) + 0.25F, 0.0F, 1.0F) * depth_mask;
+                const float drift_x = xs + std::sin((ys * 0.026F) - static_cast<float>(now) * 0.95F) * 11.0F;
+                const float drift_y = ys + std::sin((xs * 0.021F) + static_cast<float>(now) * 0.75F) * 8.0F;
+                const float wave1 = std::sin(drift_x * 0.102F + static_cast<float>(now) * 3.0F + std::sin(drift_y * 0.054F - static_cast<float>(now) * 1.2F) * 1.9F);
+                const float wave2 = std::sin((drift_x + drift_y) * 0.064F - static_cast<float>(now) * 3.5F);
+                const float wave3 = std::sin(std::hypot(drift_x - kLcdWidth * 0.58F, drift_y - kLcdHeight * 0.22F) * 0.12F - static_cast<float>(now) * 2.4F);
+                const float wave4 = std::sin((drift_x * 0.036F) - (drift_y * 0.071F) + static_cast<float>(now) * 1.6F);
+                float caustic = std::max(0.0F, wave1 + wave2 * 0.82F + wave3 * 0.72F + wave4 * 0.45F - 1.05F);
+                caustic = std::pow(caustic, 1.48F) * shimmer_mask * 56.0F;
+                float sun_glow = std::max(0.0F,
+                    std::sin((xs * 0.031F) - (ys * 0.043F) + static_cast<float>(now) * 1.8F) +
+                    std::sin((xs * 0.018F) + (ys * 0.026F) - static_cast<float>(now) * 1.15F) - 0.1F);
+                sun_glow = std::pow(sun_glow, 1.65F) * (0.3F + radial_mask * 0.7F) * (0.45F + depth_mask * 0.55F) * 16.0F;
+                const auto base = input.get(x, y);
+                out.set(x, y, clamp_color({
+                    static_cast<int>(std::lround(base.r + caustic * 0.44F + sun_glow * 0.32F)),
+                    static_cast<int>(std::lround(base.g + caustic * 0.92F + sun_glow * 0.58F)),
+                    static_cast<int>(std::lround(base.b + caustic * 0.66F + sun_glow * 0.40F)),
+                }));
+            }
+        }
+        return out;
+    }
+
+    RGBImage apply_ripple_distortion(const RGBImage& input, double now) const {
+        if (ripples.empty()) {
+            return input;
+        }
+        RGBImage out(kLcdWidth, kLcdHeight);
+        for (int y = 0; y < kLcdHeight; ++y) {
+            for (int x = 0; x < kLcdWidth; ++x) {
+                const auto idx = static_cast<std::size_t>(y * kLcdWidth + x);
+                const float xs = g_assets->grid_x[idx];
+                const float ys = g_assets->grid_y[idx];
+                float offset_x = 0.0F;
+                float offset_y = 0.0F;
+                float highlight = 0.0F;
+                for (const auto& ripple : ripples) {
+                    const float dx = xs - ripple.x;
+                    const float dy = ys - ripple.y;
+                    const float dist = std::hypot(dx, dy);
+                    const float safe_dist = std::max(dist, 1.0F);
+                    const float ring_width = 5.5F + ripple.radius * 0.02F;
+                    const float ring = std::exp(-((dist - ripple.radius) * (dist - ripple.radius)) / (2.0F * ring_width * ring_width));
+                    const float wave = std::sin((dist - ripple.radius) * 0.85F - static_cast<float>(now) * 10.0F);
+                    const float strength = ring * wave * ripple.alpha * (3.5F + ripple.radius * 0.015F);
+                    offset_x += (dx / safe_dist) * strength;
+                    offset_y += (dy / safe_dist) * strength * 0.7F;
+                    highlight += ring * clamp_float(wave, 0.0F, 1.0F) * ripple.alpha * 18.0F;
+                }
+                const int sx = clamp_int(static_cast<int>(std::lround(xs - offset_x)), 0, kLcdWidth - 1);
+                const int sy = clamp_int(static_cast<int>(std::lround(ys - offset_y)), 0, kLcdHeight - 1);
+                const auto sampled = input.get(sx, sy);
+                out.set(x, y, clamp_color({
+                    static_cast<int>(std::lround(sampled.r + highlight * 0.30F)),
+                    static_cast<int>(std::lround(sampled.g + highlight * 0.65F)),
+                    static_cast<int>(std::lround(sampled.b + highlight * 0.90F)),
+                }));
+            }
+        }
+        return out;
+    }
+
+    RGBImage apply_lilypad_ripple_reflection(const RGBImage& input, double now) const {
+        if (ripples.empty()) {
+            return input;
+        }
+        RGBImage out = input;
+        for (const auto& pad : lilypads) {
+            const auto b = pad.bounds();
+            if (b.x >= kLcdWidth || b.y >= kLcdHeight || b.x + b.w <= 0 || b.y + b.h <= 0) {
+                continue;
+            }
+            RGBAImage overlay(b.w, b.h);
+            bool any = false;
+            for (int y = 0; y < b.h; ++y) {
+                for (int x = 0; x < b.w; ++x) {
+                    const auto sprite = pad.sprite.get(x, y);
+                    const float alpha = sprite.a / 255.0F;
+                    if (alpha <= 0.05F) {
+                        continue;
+                    }
+                    const float global_x = static_cast<float>(b.x + x);
+                    const float global_y = static_cast<float>(b.y + y);
+                    float response = 0.0F;
+                    for (const auto& ripple : ripples) {
+                        const float dx = global_x - ripple.x;
+                        const float dy = global_y - ripple.y;
+                        const float dist = std::hypot(dx, dy);
+                        const float ring_width = 7.5F + ripple.radius * 0.035F;
+                        const float ring = std::exp(-((dist - ripple.radius) * (dist - ripple.radius)) / (2.0F * ring_width * ring_width));
+                        const float wave = std::sin((dist - ripple.radius) * 0.62F - static_cast<float>(now) * 7.5F);
+                        response += ring * wave * ripple.alpha;
+                    }
+                    const float rim_mask = clamp_float(alpha * (1.0F - alpha) * 5.0F, 0.0F, 1.0F);
+                    const float pad_mask = clamp_float(alpha * 0.38F + rim_mask * 0.62F, 0.0F, 1.0F);
+                    const float positive = clamp_float(response, 0.0F, 1.0F) * pad_mask;
+                    const float negative = clamp_float(-response, 0.0F, 1.0F) * pad_mask;
+                    const ColorRGBA color{
+                        static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(positive * 150.0F)), 0, 255)),
+                        static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(positive * 185.0F)), 0, 255)),
+                        static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(positive * 175.0F)), 0, 255)),
+                        static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(positive * 34.0F + negative * 18.0F)), 0, 255)),
+                    };
+                    if (color.a > 0) {
+                        any = true;
+                    }
+                    overlay.set(x, y, color);
+                }
+            }
+            if (any) {
+                composite_rgba_over_rgb_at(out, overlay, b.x, b.y);
+            }
+        }
+        return out;
+    }
+
+    RGBImage render() const {
+        const double rel_now = now_seconds() - start_time;
+        RGBImage img = g_assets->bg;
+        img = apply_floor_shimmer(img, rel_now);
+        for (const auto& koi : fish) {
+            koi.draw(img);
+        }
+        img = apply_ripple_distortion(img, rel_now);
+        for (const auto& pad : lilypads) {
+            pad.draw(img);
+        }
+        img = apply_lilypad_ripple_reflection(img, rel_now);
+        return img;
+    }
+};
+
+std::atomic<int> g_touch_x{-1};
+std::atomic<int> g_touch_y{-1};
+std::atomic<bool> g_is_touched{false};
+std::atomic<bool> g_stop_touch{false};
+
+void touch_thread_func() {
+    try {
+        hal_gpio_set_mode(TOUCH_RST_GPIO, GPIO_MODE_OUT);
+        hal_gpio_write(TOUCH_RST_GPIO, GPIO_LOW);
+        hal_delay_ms(10);
+        hal_gpio_write(TOUCH_RST_GPIO, GPIO_HIGH);
+        hal_delay_ms(50);
+
+        bool i2c_ok = hal_i2c_init(kTouchI2CPrimary) == 0;
+        if (!i2c_ok) {
+            i2c_ok = hal_i2c_init(kTouchI2CFallback) == 0;
+        }
+        if (!i2c_ok) {
+            return;
+        }
+        hal_i2c_write_byte(kTouchAddr, 0xFE, 0x01);
+        hal_i2c_write_byte(kTouchAddr, 0xFA, 0x41);
+
+        while (!g_stop_touch.load()) {
+            std::uint8_t data[6] = {0, 0, 0, 0, 0, 0};
+            if (hal_i2c_read_bytes(kTouchAddr, 0x01, data, 6) == 0 && data[1] > 0) {
+                const int x = ((data[2] & 0x0F) << 8) | data[3];
+                const int y = ((data[4] & 0x0F) << 8) | data[5];
+                g_touch_x.store((kLcdWidth - 1) - x);
+                g_touch_y.store(y);
+                g_is_touched.store(true);
+            } else {
+                g_is_touched.store(false);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        hal_i2c_close();
+    } catch (...) {
+        g_is_touched.store(false);
+    }
+}
+
+std::vector<std::uint16_t> rgb_to_rgb565(const RGBImage& image) {
+    std::vector<std::uint16_t> out(static_cast<std::size_t>(image.width * image.height));
+    for (int y = 0; y < image.height; ++y) {
+        for (int x = 0; x < image.width; ++x) {
+            const auto color = image.get(x, y);
+            const std::uint16_t r = static_cast<std::uint16_t>((color.r >> 3U) << 11U);
+            const std::uint16_t g = static_cast<std::uint16_t>((color.g >> 2U) << 5U);
+            const std::uint16_t b = static_cast<std::uint16_t>(color.b >> 3U);
+            out[static_cast<std::size_t>(y * image.width + x)] = static_cast<std::uint16_t>(r | g | b);
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+int koi_pond_run() {
+    try {
+        std::cout << "Loading assets..." << std::endl;
+        PondAssets assets;
+        g_assets = &assets;
+
+        std::cout << "Initializing display..." << std::endl;
+        WaveshareDisplayDriver driver(kSpiSpeedHz);
+        driver.init();
+
+        std::cout << "Starting touch thread..." << std::endl;
+        g_stop_touch.store(false);
+        std::thread touch_thread(touch_thread_func);
+
+        Pond pond;
+        std::cout << "Running Koi pond..." << std::endl;
+
+        bool last_touch = false;
+        while (true) {
+            const auto frame_start = std::chrono::steady_clock::now();
+            const bool is_touched = g_is_touched.load();
+            if (is_touched && !last_touch) {
+                pond.add_ripple(static_cast<float>(g_touch_x.load()), static_cast<float>(g_touch_y.load()));
+            }
+            last_touch = is_touched;
+            pond.update(now_seconds());
+            const auto image = pond.render();
+            driver.draw_frame_rgb565(rgb_to_rgb565(image));
+            const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - frame_start).count();
+            if (elapsed < 0.033) {
+                std::this_thread::sleep_for(std::chrono::duration<double>(0.033 - elapsed));
+            }
+        }
+
+        g_stop_touch.store(true);
+        touch_thread.join();
+    } catch (const std::exception& ex) {
+        std::ofstream crash_log("/tmp/koi_crash_trace.log");
+        crash_log << ex.what() << '\n';
+        std::cerr << ex.what() << std::endl;
+        return 1;
+    } catch (...) {
+        std::ofstream crash_log("/tmp/koi_crash_trace.log");
+        crash_log << "Unknown exception" << '\n';
+        std::cerr << "Unknown exception" << std::endl;
+        return 1;
+    }
+    return 0;
+}

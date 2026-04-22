@@ -30,8 +30,18 @@
 #include <linux/i2c-dev.h>
 #else
 /* Stub implementations for non-Linux platforms (for compilation) */
-typedef int spi_ioc_transfer;
+struct spi_ioc_transfer {
+    unsigned long tx_buf;
+    unsigned long rx_buf;
+    unsigned int len;
+    unsigned short delay_usecs;
+    unsigned int speed_hz;
+    unsigned char bits_per_word;
+};
 #define SPI_IOC_MESSAGE(n) 0
+#define SPI_IOC_WR_MODE 0
+#define SPI_IOC_WR_BITS_PER_WORD 0
+#define SPI_IOC_WR_MAX_SPEED_HZ 0
 #define I2C_SLAVE 0
 #endif
 

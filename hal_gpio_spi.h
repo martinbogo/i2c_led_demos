@@ -9,6 +9,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum {
     GPIO_MODE_IN,
     GPIO_MODE_OUT,
@@ -51,5 +55,9 @@ int hal_i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *data, size_t len);
 /* Delay Operations */
 void hal_delay_ms(uint32_t ms);
 void hal_delay_us(uint32_t us);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* HAL_GPIO_SPI_H */
