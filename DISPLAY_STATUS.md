@@ -5,7 +5,7 @@
 - Display: Waveshare 1.28" round touch LCD (240×240 pixels)
 - Controller: GC9A01A (SPI interface)
 - Raspberry Pi 5 with Raspberry Pi OS
-- SPI bus: /dev/spidev10.0 at 10 MHz
+- SPI bus: `/dev/spidev0.0` preferred, with automatic fallback to `/dev/spidev10.0`, at 10 MHz
 
 ✅ **GPIO/SPI Communication**
 - GPIO control via libgpiod (gpiod Python module)
@@ -37,16 +37,31 @@ The display likely has **separate power pins (VCC/GND)** from GPIO control pins.
 
 ## Pin Configuration Used
 
-| Function | GPIO Pin | Status |
-|----------|----------|--------|
-| CS (Chip Select) | GPIO 8 | ✅ Working |
-| DC (Data/Command) | GPIO 25 | ✅ Working |
-| RST (Reset) | GPIO 27 | ✅ Working |
-| BL (Backlight) | GPIO 18 | ✅ Working |
-| MOSI | GPIO 10 (SPI) | ✅ Working |
-| MISO | GPIO 9 (SPI) | ✅ Working |
-| SCLK | GPIO 11 (SPI) | ✅ Working |
-| **VCC/GND** | **Power pins** | ❓ **Unknown - likely missing!** |
+| Function | BCM GPIO | Physical Pin | Status |
+|----------|----------|--------------|--------|
+| CS (Chip Select) | GPIO 8 | Pin 24 | ✅ Working |
+| DC (Data/Command) | GPIO 25 | Pin 22 | ✅ Working |
+| LCD RST | GPIO 27 | Pin 13 | ✅ Working |
+| BL (Backlight) | GPIO 18 | Pin 12 | ✅ Working |
+| MOSI | GPIO 10 | Pin 19 | ✅ Working |
+| MISO | GPIO 9 | Pin 21 | ✅ Working |
+| SCLK | GPIO 11 | Pin 23 | ✅ Working |
+| Touch SDA | GPIO 2 | Pin 3 | ✅ Expected wiring |
+| Touch SCL | GPIO 3 | Pin 5 | ✅ Expected wiring |
+| Touch INT | GPIO 4 | Pin 7 | ✅ Expected wiring |
+| Touch RST | GPIO 17 | Pin 11 | ✅ Expected wiring |
+| **VCC/GND** | **Power pins** | **Pin 1 or 17 and any GND** | ❓ **Verify on your hardware** |
+
+## Required `/boot/firmware/config.txt` settings
+
+The Pi Waveshare demos assume this configuration:
+
+```ini
+dtparam=spi=on
+dtparam=i2c_arm=on
+```
+
+If those lines are missing, the Pi may not expose the SPI or I2C devices the demos expect.
 
 ## Next Steps to Debug
 

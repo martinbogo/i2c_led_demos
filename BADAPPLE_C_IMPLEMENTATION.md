@@ -113,9 +113,22 @@ To add full RGB565 color support:
 
 If you get GPIO/SPI errors, ensure:
 - `libgpiod-dev` is installed (if using libgpiod backend)
-- `/dev/spidev10.0` exists
-- GPIO pins (8, 18, 25, 27) are accessible
+- `/dev/spidev0.0` exists, or `/dev/spidev10.0` exists for the automatic fallback path
+- `/boot/firmware/config.txt` enables `dtparam=spi=on` and `dtparam=i2c_arm=on`
+- GPIO pins `8`, `18`, `25`, and `27` are accessible for the LCD wiring in `gpio_config.h`
 - Running with sudo/root privileges
+
+Current Pi demo header wiring for the display path:
+
+| Function | BCM GPIO | Physical Pin |
+|----------|----------|--------------|
+| SPI MOSI | GPIO10 | Pin 19 |
+| SPI MISO | GPIO9 | Pin 21 |
+| SPI SCLK | GPIO11 | Pin 23 |
+| CS | GPIO8 | Pin 24 |
+| DC | GPIO25 | Pin 22 |
+| LCD reset | GPIO27 | Pin 13 |
+| Backlight | GPIO18 | Pin 12 |
 
 ### Runtime Issues
 

@@ -95,15 +95,30 @@ Expand the original `badapple.c` demo to compile and configure for the Waveshare
 - **Colors**: RGB565 (65K colors)
 
 ### Hardware Pinout
-| Function | GPIO | Pin |
-|----------|------|-----|
-| SPI CLK  | 11   | GPIO11 |
-| SPI MOSI | 10   | GPIO10 |
-| SPI MISO | 9    | GPIO9  |
-| CS       | 8    | GPIO8  |
-| DC       | 25   | GPIO25 |
-| RST      | 27   | GPIO27 |
-| BL       | 18   | GPIO18 |
+| Function | BCM GPIO | Physical Pin |
+|----------|----------|--------------|
+| SPI CLK  | GPIO11 | Pin 23 |
+| SPI MOSI | GPIO10 | Pin 19 |
+| SPI MISO | GPIO9 | Pin 21 |
+| CS       | GPIO8 | Pin 24 |
+| DC       | GPIO25 | Pin 22 |
+| LCD RST  | GPIO27 | Pin 13 |
+| BL       | GPIO18 | Pin 12 |
+| Touch SDA | GPIO2 | Pin 3 |
+| Touch SCL | GPIO3 | Pin 5 |
+| Touch INT | GPIO4 | Pin 7 |
+| Touch RST | GPIO17 | Pin 11 |
+
+### Pi configuration required
+
+The current Pi Waveshare demos assume the following lines are present in `/boot/firmware/config.txt`:
+
+```ini
+dtparam=spi=on
+dtparam=i2c_arm=on
+```
+
+The software now tries `/dev/spidev0.0` first and falls back to `/dev/spidev10.0` automatically if the Pi exposes the SPI controller that way.
 
 ## Software Architecture
 

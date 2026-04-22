@@ -48,6 +48,44 @@ Included Python demos:
 
 **Note on Touch I2C**: On some Raspberry Pi configurations used for this project, the primary hardware I2C port was unresponsive (due to silicon damage). The touch interactions in `ferrofluid_dancer.py` were actively ported to a software I2C bus (`I2C Bus 3`) via the `dtoverlay=i2c-gpio` workaround. See the inline comments in the code if your I2C port is different.
 
+## Raspberry Pi Waveshare LCD wiring
+
+The Raspberry Pi Waveshare LCD demos in this repo now assume the pin mapping in `gpio_config.h`. If you are wiring a fresh Pi setup, use this mapping unless you also plan to change the code.
+
+### BCM to Raspberry Pi header mapping
+
+| Function | BCM GPIO | Physical Pin | Notes |
+|----------|----------|--------------|-------|
+| LCD SCLK | GPIO11 | Pin 23 | Hardware SPI clock |
+| LCD MOSI | GPIO10 | Pin 19 | Hardware SPI MOSI |
+| LCD MISO | GPIO9 | Pin 21 | Hardware SPI MISO |
+| LCD CS | GPIO8 | Pin 24 | CE0, primary chip select |
+| LCD DC | GPIO25 | Pin 22 | Data or command select |
+| LCD RST | GPIO27 | Pin 13 | LCD reset |
+| LCD BL | GPIO18 | Pin 12 | Backlight control |
+| Touch SDA | GPIO2 | Pin 3 | I2C1 SDA |
+| Touch SCL | GPIO3 | Pin 5 | I2C1 SCL |
+| Touch INT | GPIO4 | Pin 7 | Touch interrupt |
+| Touch RST | GPIO17 | Pin 11 | Touch reset |
+| 3.3V | - | Pin 1 or 17 | Display and touch logic power |
+| GND | - | Any GND pin | Shared ground |
+
+### `/boot/firmware/config.txt` changes
+
+For the standard Pi Waveshare demos, make sure these lines are present in `/boot/firmware/config.txt`:
+
+```ini
+dtparam=spi=on
+dtparam=i2c_arm=on
+```
+
+Then reboot.
+
+Notes:
+- The code now tries `/dev/spidev0.0` first and falls back to `/dev/spidev10.0` automatically on systems that expose the Pi 5 SPI device that way.
+- The touch controller for the Pi Waveshare demos uses the normal hardware I2C bus on GPIO2 and GPIO3. The `i2c-gpio` overlay mentioned above is only a workaround for the damaged-board `ferrofluid_dancer.py` setup.
+- If your wiring or overlays use different GPIOs, update `gpio_config.h` before building the C and C++ demos.
+
 ## Display assumptions
 
 The demos target a 128x64 SSD1306 OLED connected over I2C at address `0x3C`.

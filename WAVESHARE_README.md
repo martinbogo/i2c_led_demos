@@ -1,6 +1,6 @@
 # Waveshare 1.28" Round LCD Display Integration for Bad Apple
 
-This project integrates a Waveshare 1.28" round OLED display (GC9A01A controller) with Raspberry Pi for streaming Bad Apple video.
+This project integrates a Waveshare 1.28" round LCD display (GC9A01A controller, CST816S touch controller) with Raspberry Pi for Bad Apple and the other Pi Waveshare demos in this repo.
 
 ## Hardware
 
@@ -12,24 +12,46 @@ This project integrates a Waveshare 1.28" round OLED display (GC9A01A controller
 
 ### GPIO Pin Mapping (BCM)
 
-| Function | GPIO | Notes |
-|----------|------|-------|
-| SPI MOSI | 10 | Hardware SPI |
-| SPI MISO | 9 | Hardware SPI |
-| SPI SCLK | 11 | Hardware SPI |
-| Chip Select | 8 | GPIO output |
-| Data/Command | 25 | GPIO output |
-| Reset | 27 | GPIO output |
-| Backlight | 18 | GPIO output |
-| I2C SDA | 2 | Touch controller |
-| I2C SCL | 3 | Touch controller |
+| Function | BCM GPIO | Physical Pin | Notes |
+|----------|----------|--------------|-------|
+| SPI MOSI | 10 | Pin 19 | Hardware SPI MOSI |
+| SPI MISO | 9 | Pin 21 | Hardware SPI MISO |
+| SPI SCLK | 11 | Pin 23 | Hardware SPI clock |
+| Chip Select | 8 | Pin 24 | CE0, primary chip select |
+| Data/Command | 25 | Pin 22 | LCD D/C |
+| LCD Reset | 27 | Pin 13 | LCD reset |
+| Backlight | 18 | Pin 12 | LCD backlight |
+| I2C SDA | 2 | Pin 3 | Touch controller SDA |
+| I2C SCL | 3 | Pin 5 | Touch controller SCL |
+| Touch INT | 4 | Pin 7 | CST816S interrupt |
+| Touch Reset | 17 | Pin 11 | CST816S reset |
+| 3.3V | - | Pin 1 or 17 | Logic power |
+| GND | - | Any GND pin | Shared ground |
+
+This is the current Pi demo pinout. Older notes that mention different reset or SPI device assumptions are out of date.
+
+### `/boot/firmware/config.txt`
+
+The Pi Waveshare demos assume hardware SPI and hardware I2C are enabled. Add or verify these lines in `/boot/firmware/config.txt`:
+
+```ini
+dtparam=spi=on
+dtparam=i2c_arm=on
+```
+
+After saving the file, reboot the Pi.
+
+If your Pi is already using these interfaces for another overlay, either keep the wiring above or change `gpio_config.h` and the relevant Python constants to match your custom wiring.
 
 ### SPI Configuration
 
-- Device: `/dev/spidev10.0`
+- Primary device: `/dev/spidev0.0`
+- Automatic fallback: `/dev/spidev10.0`
 - Speed: 10 MHz
 - Mode: 0 (CPOL=0, CPHA=0)
 - Bus width: 8-bit
+
+The code tries `/dev/spidev0.0` first and automatically retries `/dev/spidev10.0` if the Pi exposes the SPI controller that way.
 
 ## Software Components
 
@@ -61,6 +83,10 @@ This project integrates a Waveshare 1.28" round OLED display (GC9A01A controller
 - Timing utilities
 
 **`gpio_config.h`** - Centralized pin/device configuration
+
+- Current LCD reset pin: `GPIO27`
+- Current touch reset pin: `GPIO17`
+- Current touch interrupt pin: `GPIO4`
 
 **`test_lcd_gc9a01.c`** - C test program
 
@@ -145,6 +171,8 @@ bytes_per_frame = np.packbits(pixels.flatten())
 - Connect display VCC to 3.3V or 5V (check module specs)
 - Connect display GND to Raspberry Pi GND
 - Verify connections with multimeter
+
+Also verify that `/boot/firmware/config.txt` enables both SPI and I2C, and that the panel is wired to the GPIOs listed above. If your panel is still wired to an older pinout, update the wiring or change `gpio_config.h`.
 
 ### SPI Transfer Errors
 

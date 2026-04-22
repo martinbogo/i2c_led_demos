@@ -15,6 +15,23 @@
 
 ## Quick Start
 
+### 0. Check Pi wiring and `/boot/firmware/config.txt`
+
+Before running the Waveshare demos, make sure the Raspberry Pi is wired to the current pinout:
+
+- SPI: GPIO8, GPIO9, GPIO10, GPIO11
+- LCD control: GPIO25 (DC), GPIO27 (LCD reset), GPIO18 (backlight)
+- Touch: GPIO2, GPIO3, GPIO4 (INT), GPIO17 (touch reset)
+
+And make sure `/boot/firmware/config.txt` contains:
+
+```ini
+dtparam=spi=on
+dtparam=i2c_arm=on
+```
+
+Reboot after editing `config.txt`.
+
 ### Verify Display Works
 
 ```bash
@@ -50,8 +67,9 @@ sudo python3 badapple_waveshare.py bad_apple.bin --fps 30
 
 **Display**: Waveshare 1.28" Round LCD (GC9A01A)
 **Connections**: 
-- SPI: Bus 10 @ 10 MHz
-- GPIO: 8 (CS), 25 (DC), 27 (RST), 18 (BL)
+- SPI: `/dev/spidev0.0` preferred, with automatic fallback to `/dev/spidev10.0`
+- GPIO: 8 (CS), 25 (DC), 27 (LCD RST), 18 (BL)
+- Touch: 2 (SDA), 3 (SCL), 4 (INT), 17 (RST)
 - Status: All verified working
 
 **Issue**: Display likely needs separate 5V/GND power - see `POWER_TROUBLESHOOTING.md`

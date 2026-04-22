@@ -37,12 +37,36 @@ EOF'
 The Waveshare display requires TWO separate connections:
 
 1. **GPIO/SPI Control Signals** (currently connected and working):
-   - GPIO 8, 25, 27, 18 (all verified functional)
+   - GPIO 8, 25, 27, 18 for the LCD
+   - GPIO 2, 3, 4, 17 for touch-enabled demos
    - SPI signals on GPIO 9, 10, 11
 
 2. **Main Power Supply** (likely missing):
    - VCC: 3.3V or 5V (depends on module variant)
    - GND: Ground reference
+
+The current Pi demo wiring assumes the Raspberry Pi header connections below:
+
+| Function | BCM GPIO | Physical Pin |
+|----------|----------|--------------|
+| CS | GPIO 8 | Pin 24 |
+| DC | GPIO 25 | Pin 22 |
+| LCD RST | GPIO 27 | Pin 13 |
+| BL | GPIO 18 | Pin 12 |
+| MOSI | GPIO 10 | Pin 19 |
+| MISO | GPIO 9 | Pin 21 |
+| SCLK | GPIO 11 | Pin 23 |
+| Touch SDA | GPIO 2 | Pin 3 |
+| Touch SCL | GPIO 3 | Pin 5 |
+| Touch INT | GPIO 4 | Pin 7 |
+| Touch RST | GPIO 17 | Pin 11 |
+
+Before debugging the display itself, confirm `/boot/firmware/config.txt` enables both buses:
+
+```ini
+dtparam=spi=on
+dtparam=i2c_arm=on
+```
 
 **Check if these connections exist:**
 ```bash
@@ -95,7 +119,10 @@ chip = gpiod.Chip('/dev/gpiochip0')
 chip.close()
 # SPI works if no exceptions
 spi = spidev.SpiDev()
-spi.open(10, 0)
+try:
+   spi.open(0, 0)
+except Exception:
+   spi.open(10, 0)
 spi.close()
 print('✓ GPIO and SPI hardware working')
 "
