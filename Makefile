@@ -47,11 +47,11 @@ ALL_BINS = $(PI_BINS) $(UNOQ_BINS) badapple_waveshare $(KOI_POND_LIB_STATIC) $(K
 DEP_DIR = .deps
 
 ifeq ($(strip $(MAKECMDGOALS)),)
-DEP_TARGETS = $(ALL_BINS)
+DEP_TARGETS = $(filter-out badapple_waveshare $(KOI_POND_LIB_STATIC) $(KOI_POND_LIB_SHARED) $(KOI_POND_BINS),$(ALL_BINS))
 else ifneq ($(filter clean,$(MAKECMDGOALS)),)
 DEP_TARGETS =
 else
-DEP_TARGETS = $(filter $(ALL_BINS),$(MAKECMDGOALS))
+DEP_TARGETS = $(filter-out badapple_waveshare $(KOI_POND_LIB_STATIC) $(KOI_POND_LIB_SHARED) $(KOI_POND_BINS),$(filter $(ALL_BINS),$(MAKECMDGOALS)))
 endif
 
 DEPS = $(patsubst %,$(DEP_DIR)/%.d,$(DEP_TARGETS))
