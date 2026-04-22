@@ -2870,6 +2870,7 @@ class Koi:
         self.hide_timer = 0
         self.hide_target = None
         self.scared = random.uniform(0, 9.0)
+        self.swim_speed_trait = random.uniform(0.0, 9.0)
         self.offscreen_replacement_checked = False
         self.vel = [random.uniform(-1, 1), random.uniform(-1, 1)]
         self.normalize(self.vel)
@@ -2895,6 +2896,38 @@ class Koi:
 
     def _clamp_color(self, color):
         return tuple(max(0, min(255, int(c))) for c in color)
+
+    def _scale_from_trait(self, slow_value, baseline_value, fast_value):
+        trait = max(0.0, min(9.0, self.swim_speed_trait))
+        if trait <= 5.0:
+            blend = trait / 5.0
+            return slow_value + (baseline_value - slow_value) * blend
+        blend = (trait - 5.0) / 4.0
+        return baseline_value + (fast_value - baseline_value) * blend
+
+    def _cruise_speed(self):
+        return self._scale_from_trait(1.0, 2.5, 3.8)
+
+    def _cruise_turn_span(self):
+        return self._scale_from_trait(0.10, 0.40, 0.72)
+
+    def _hide_speed(self):
+        return self._scale_from_trait(0.28, 0.60, 1.00)
+
+    def _hide_turn_span(self):
+        return self._scale_from_trait(0.18, 0.60, 0.95)
+
+    def _return_speed(self):
+        return self._scale_from_trait(0.55, 1.00, 1.55)
+
+    def _return_turn_span(self):
+        return self._scale_from_trait(0.18, 0.50, 0.80)
+
+    def _panic_speed_multiplier(self):
+        return self._scale_from_trait(0.82, 1.00, 1.18)
+
+    def _panic_turn_response(self):
+        return self._scale_from_trait(0.14, 0.20, 0.28)
 
     def _generate_texture_marks(self):
         palette = [
@@ -2979,7 +3012,7 @@ class Koi:
             self.hide_timer = 0
             self.hide_target = None
             
-        speed = 2.5
+        speed = self._cruise_speed()
         ax, ay = 0, 0
         
         if flee_points and self.hiding_state in ("normal", "returning"):
@@ -3015,7 +3048,8 @@ class Koi:
                 
         if self.hiding_state == "normal":
             # Basic wandering behavior
-            wander_angle = random.uniform(-0.4, 0.4)
+            wander_span = self._cruise_turn_span()
+            wander_angle = random.uniform(-wander_span, wander_span)
             current_angle = math.atan2(self.vel[1], self.vel[0])
             new_angle = current_angle + wander_angle
             
@@ -3031,7 +3065,7 @@ class Koi:
             self.vel[1] = math.sin(new_angle) * speed + ay
             
         elif self.hiding_state == "hiding":
-            speed = 3.0 + (self.scared / 9.0) * 5.0 # speed proportional to scared
+            speed = (3.0 + (self.scared / 9.0) * 5.0) * self._panic_speed_multiplier()
             dx = self.hide_target[0] - self.pos[0]
             dy = self.hide_target[1] - self.pos[1]
             dist = math.sqrt(dx**2 + dy**2)
@@ -3041,7 +3075,7 @@ class Koi:
                 self.hiding_state = "hidden"
                 self.hide_timer = time.time() + (self.scared / 9.0) * 10.0
                 # Do not stop completely, just slow down
-                speed = 0.6
+                speed = self._hide_speed()
             else:
                 # Steer towards target
                 tx, ty = (dx/dist), (dy/dist)
@@ -3052,14 +3086,15 @@ class Koi:
                 
                 # Turn quickly towards target
                 diff = (target_angle - current_angle + math.pi) % (2*math.pi) - math.pi
-                new_angle = current_angle + diff * 0.2
+                new_angle = current_angle + diff * self._panic_turn_response()
                 
                 self.vel[0] = math.cos(new_angle) * speed
                 self.vel[1] = math.sin(new_angle) * speed
 
         elif self.hiding_state == "hidden":
-            speed = 0.6 # gently wiggle/wander around hiding spot
-            wander_angle = random.uniform(-0.6, 0.6)
+            speed = self._hide_speed() # gently wiggle/wander around hiding spot
+            hidden_turn_span = self._hide_turn_span()
+            wander_angle = random.uniform(-hidden_turn_span, hidden_turn_span)
             current_angle = math.atan2(self.vel[1], self.vel[0])
             new_angle = current_angle + wander_angle
             
@@ -3076,13 +3111,14 @@ class Koi:
             
             if time.time() > self.hide_timer:
                 self.hiding_state = "returning"
-                speed = 1.0
+                speed = self._return_speed()
                 
         elif self.hiding_state == "returning":
-            speed = 1.0 # creep back in slowly
+            speed = self._return_speed() # creep back in slowly
             
             # Wander slowly but prefer center
-            wander_angle = random.uniform(-0.5, 0.5)
+            return_turn_span = self._return_turn_span()
+            wander_angle = random.uniform(-return_turn_span, return_turn_span)
             current_angle = math.atan2(self.vel[1], self.vel[0])
             new_angle = current_angle + wander_angle
             
@@ -3262,7 +3298,8 @@ class Pond:
         dy = target_y - y
         dist = math.hypot(dx, dy)
         if dist > 0.001:
-            koi.vel = [(dx / dist) * 2.1, (dy / dist) * 2.1]
+            spawn_speed = koi._scale_from_trait(1.1, 2.1, 3.1)
+            koi.vel = [(dx / dist) * spawn_speed, (dy / dist) * spawn_speed]
         koi.pos = [x, y]
         koi.segments = [[x, y] for _ in range(koi.num_chunks)]
         return koi
