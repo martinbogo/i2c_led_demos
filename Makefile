@@ -8,6 +8,7 @@ CXXFLAGS = -O2 -Wall -std=c++17
 LDFLAGS =
 LDLIBS = -lm -lz
 CPP_LDLIBS = -lm -lz -lpthread
+GPIO_LDLIBS =
 OLED_LUT_GENERATOR = generate_oled_lut_header.py
 OLED_LUT_HEADER = oled_build_lut.h
 OLED_CALIBRATION_FILE ?= oled_gamma_calibration.txt
@@ -23,6 +24,7 @@ SIZE_LDFLAGS = -Wl,-dead_strip -Wl,-x
 else
 SIZE_LDFLAGS = -Wl,--gc-sections -Wl,-s
 SIZE_ELF_EXTRA_LDFLAGS = -Wl,--build-id=none -Wl,-z,norelro
+GPIO_LDLIBS = -lgpiod
 endif
 
 SIZE_EXTRA_LDFLAGS = -flto
@@ -82,7 +84,7 @@ lcd_gc9a01.o: lcd_gc9a01.c lcd_gc9a01.h gpio_config.h hal_gpio_spi.h
 
 # Waveshare Bad Apple Demo
 badapple_waveshare: hal_gpio_spi.o lcd_gc9a01.o badapple_waveshare.o
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS) $(GPIO_LDLIBS)
 
 badapple_waveshare.o: badapple_waveshare.c lcd_gc9a01.h gpio_config.h hal_gpio_spi.h
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -97,13 +99,13 @@ $(KOI_POND_LIB_STATIC): $(KOI_POND_CORE_OBJS)
 	$(AR) rcs $@ $^
 
 $(KOI_POND_LIB_SHARED): $(KOI_POND_CORE_OBJS)
-	$(CXX) -shared $(LDFLAGS) -o $@ $^ $(CPP_LDLIBS)
+	$(CXX) -shared $(LDFLAGS) -o $@ $^ $(CPP_LDLIBS) $(GPIO_LDLIBS)
 
 koi_pond_static: $(KOI_POND_MAIN_OBJ) $(KOI_POND_LIB_STATIC)
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $(KOI_POND_MAIN_OBJ) -L. -lkoi_pond $(CPP_LDLIBS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $(KOI_POND_MAIN_OBJ) $(KOI_POND_LIB_STATIC) $(CPP_LDLIBS) $(GPIO_LDLIBS)
 
 koi_pond_dynamic: $(KOI_POND_MAIN_OBJ) $(KOI_POND_LIB_SHARED)
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $(KOI_POND_MAIN_OBJ) -L. -lkoi_pond -Wl,-rpath,'$$ORIGIN' $(CPP_LDLIBS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $(KOI_POND_MAIN_OBJ) -L. -lkoi_pond -Wl,-rpath,'$$ORIGIN' $(CPP_LDLIBS) $(GPIO_LDLIBS)
 
 $(DEP_DIR):
 	mkdir -p $@

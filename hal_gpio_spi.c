@@ -3,13 +3,12 @@
  * Date    : 2026-04-21
  * License : CC BY-NC 4.0 (https://creativecommons.org/licenses/by-nc/4.0/)
  *
- * hal_gpio_spi.c - Software bitbanged SPI using Linux sysfs GPIO
- * Provide bit-banged SPI primitives for driving GC9A01 LCD.
+ * hal_gpio_spi.c - GPIO/SPI/I2C hardware abstraction layer.
  *
  */
 /*
  * hal_gpio_spi.c - Hardware Abstraction Layer Implementation
- * Direct GPIO and SPI access via /sys/class/gpio and /dev/spidev
+ * Direct GPIO access via libgpiod and SPI access via /dev/spidev
  * Note: This is a Raspberry Pi specific implementation (Linux only)
  */
 
@@ -25,6 +24,7 @@
 
 /* Include Linux-specific headers only on Linux */
 #ifdef __linux__
+#include <gpiod.h>
 #include <sys/ioctl.h>
 #include <linux/spi/spidev.h>
 #include <linux/i2c-dev.h>
@@ -48,91 +48,228 @@ struct spi_ioc_transfer {
 static int spi_fd = -1;
 static int i2c_fd = -1;
 
+#ifdef __linux__
+static struct gpiod_chip *gpio_chip = NULL;
+static struct gpiod_line_request *gpio_requests[64] = {0};
+static gpio_mode_t gpio_modes[64] = {0};
+#endif
+
+static int validate_gpio_pin(uint32_t pin) {
+    return pin < 64U ? 0 : -1;
+}
+
+static int gpio_is_hw_spi_cs(uint32_t pin) {
+    return pin == LCD_CS_GPIO;
+}
+
+#ifdef __linux__
+static int ensure_gpio_chip(void) {
+    if (gpio_chip != NULL) {
+        return 0;
+    }
+
+    gpio_chip = gpiod_chip_open("/dev/gpiochip0");
+    if (gpio_chip == NULL) {
+        perror("Failed to open /dev/gpiochip0");
+        return -1;
+    }
+
+    return 0;
+}
+
+static void release_gpio_request(uint32_t pin) {
+    if (pin >= 64U) {
+        return;
+    }
+
+    if (gpio_requests[pin] != NULL) {
+        gpiod_line_request_release(gpio_requests[pin]);
+        gpio_requests[pin] = NULL;
+    }
+}
+
+static int request_gpio_line(uint32_t pin, gpio_mode_t mode, enum gpiod_line_value initial_value) {
+    struct gpiod_line_settings *settings = NULL;
+    struct gpiod_line_config *line_config = NULL;
+    struct gpiod_request_config *request_config = NULL;
+    struct gpiod_line_request *request = NULL;
+    unsigned int offset = pin;
+    int ret = -1;
+
+    if (ensure_gpio_chip() < 0) {
+        return -1;
+    }
+
+    release_gpio_request(pin);
+
+    settings = gpiod_line_settings_new();
+    line_config = gpiod_line_config_new();
+    request_config = gpiod_request_config_new();
+    if (settings == NULL || line_config == NULL || request_config == NULL) {
+        fprintf(stderr, "Failed to allocate libgpiod request objects for GPIO%u\n", pin);
+        goto cleanup;
+    }
+
+    if (mode == GPIO_MODE_IN) {
+        if (gpiod_line_settings_set_direction(settings, GPIOD_LINE_DIRECTION_INPUT) < 0) {
+            fprintf(stderr, "Failed to set GPIO%u direction to input\n", pin);
+            goto cleanup;
+        }
+    } else {
+        if (gpiod_line_settings_set_direction(settings, GPIOD_LINE_DIRECTION_OUTPUT) < 0) {
+            fprintf(stderr, "Failed to set GPIO%u direction to output\n", pin);
+            goto cleanup;
+        }
+        if (gpiod_line_settings_set_output_value(settings, initial_value) < 0) {
+            fprintf(stderr, "Failed to set GPIO%u initial output value\n", pin);
+            goto cleanup;
+        }
+    }
+
+    if (gpiod_line_config_add_line_settings(line_config, &offset, 1, settings) < 0) {
+        fprintf(stderr, "Failed to attach line settings for GPIO%u\n", pin);
+        goto cleanup;
+    }
+
+    gpiod_request_config_set_consumer(request_config, "i2c_led_demos");
+
+    request = gpiod_chip_request_lines(gpio_chip, request_config, line_config);
+    if (request == NULL) {
+        perror("Failed to request GPIO line");
+        fprintf(stderr, "GPIO request failed for GPIO%u\n", pin);
+        goto cleanup;
+    }
+
+    gpio_requests[pin] = request;
+    gpio_modes[pin] = mode;
+    ret = 0;
+
+cleanup:
+    if (ret < 0 && request != NULL) {
+        gpiod_line_request_release(request);
+    }
+    if (request_config != NULL) {
+        gpiod_request_config_free(request_config);
+    }
+    if (line_config != NULL) {
+        gpiod_line_config_free(line_config);
+    }
+    if (settings != NULL) {
+        gpiod_line_settings_free(settings);
+    }
+
+    return ret;
+}
+#endif
+
 /* ============================================================================
- * GPIO Operations using libgpiod (gpioset command)
+ * GPIO Operations
  * ============================================================================ */
 
 int hal_gpio_init(void) {
-    /* Initialize GPIO subsystem by pre-exporting needed pins */
-    uint32_t pins[] = {LCD_CS_GPIO, LCD_DC_GPIO, LCD_RST_GPIO, LCD_BL_GPIO};
-    
-    for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
-        char path[64];
-        snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u", pins[i]);
-        
-        /* Check if already exported */
-        if (access(path, F_OK) == 0) {
-            continue;  /* Already exported */
-        }
-        
-        /* Export the GPIO */
-        int fd = open("/sys/class/gpio/export", O_WRONLY);
-        if (fd >= 0) {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%u", pins[i]);
-            write(fd, buf, strlen(buf));
-            close(fd);
-            usleep(100000);  /* Wait for GPIO to be created */
-        }
+#ifdef __linux__
+    if (ensure_gpio_chip() < 0) {
+        return -1;
     }
-    
+#endif
     return 0;
 }
 
 int hal_gpio_cleanup(void) {
-    /* Cleanup GPIO subsystem */
+#ifdef __linux__
+    for (uint32_t pin = 0; pin < 64U; ++pin) {
+        release_gpio_request(pin);
+    }
+
+    if (gpio_chip != NULL) {
+        gpiod_chip_close(gpio_chip);
+        gpio_chip = NULL;
+    }
+#endif
+
     return 0;
 }
 
 int hal_gpio_set_mode(uint32_t pin, gpio_mode_t mode) {
-    char path[64];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u/direction", pin);
-    
-    int fd = open(path, O_WRONLY);
-    if (fd < 0) {
+#ifdef __linux__
+    if (validate_gpio_pin(pin) < 0) {
         return -1;
     }
-    
-    const char *direction = (mode == GPIO_MODE_IN) ? "in" : "out";
-    ssize_t ret = write(fd, direction, strlen(direction));
-    close(fd);
-    
-    return (ret > 0) ? 0 : -1;
+
+    if (gpio_is_hw_spi_cs(pin)) {
+        return 0;
+    }
+
+    if (mode != GPIO_MODE_IN && mode != GPIO_MODE_OUT) {
+        fprintf(stderr, "Unsupported GPIO mode %d for GPIO%u\n", mode, pin);
+        return -1;
+    }
+
+    return request_gpio_line(pin, mode, GPIOD_LINE_VALUE_INACTIVE);
+#else
+    (void)pin;
+    (void)mode;
+    return 0;
+#endif
 }
 
 int hal_gpio_write(uint32_t pin, gpio_level_t level) {
-    char path[64];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u/value", pin);
-    
-    int fd = open(path, O_WRONLY);
-    if (fd < 0) {
-        fprintf(stderr, "GPIO write failed: cannot open %s\n", path);
+#ifdef __linux__
+    if (validate_gpio_pin(pin) < 0) {
         return -1;
     }
-    
-    const char *value = (level == GPIO_HIGH) ? "1" : "0";
-    ssize_t ret = write(fd, value, 1);
-    close(fd);
-    
-    if (ret <= 0) {
-        fprintf(stderr, "GPIO write failed: cannot write to %s\n", path);
+
+    if (gpio_is_hw_spi_cs(pin)) {
+        return 0;
     }
-    
-    return (ret > 0) ? 0 : -1;
+
+    if (gpio_requests[pin] == NULL || gpio_modes[pin] != GPIO_MODE_OUT) {
+        if (request_gpio_line(pin, GPIO_MODE_OUT,
+                              level == GPIO_HIGH ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE) < 0) {
+            fprintf(stderr, "GPIO write failed: cannot request GPIO%u for output\n", pin);
+            return -1;
+        }
+    }
+
+    if (gpiod_line_request_set_value(gpio_requests[pin], pin,
+            level == GPIO_HIGH ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE) < 0) {
+        perror("GPIO write failed");
+        fprintf(stderr, "GPIO write failed for GPIO%u\n", pin);
+        return -1;
+    }
+
+    return 0;
+#else
+    (void)pin;
+    (void)level;
+    return 0;
+#endif
 }
 
 gpio_level_t hal_gpio_read(uint32_t pin) {
-    char path[64];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%u/value", pin);
-    
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return GPIO_LOW;
-    
-    char val;
-    ssize_t n = read(fd, &val, 1);
-    close(fd);
-    
-    return (n > 0 && val == '1') ? GPIO_HIGH : GPIO_LOW;
+#ifdef __linux__
+    enum gpiod_line_value value;
+
+    if (validate_gpio_pin(pin) < 0) {
+        return GPIO_LOW;
+    }
+
+    if (gpio_is_hw_spi_cs(pin)) {
+        return GPIO_LOW;
+    }
+
+    if (gpio_requests[pin] == NULL || gpio_modes[pin] != GPIO_MODE_IN) {
+        if (request_gpio_line(pin, GPIO_MODE_IN, GPIOD_LINE_VALUE_INACTIVE) < 0) {
+            return GPIO_LOW;
+        }
+    }
+
+    value = gpiod_line_request_get_value(gpio_requests[pin], pin);
+    return value == GPIOD_LINE_VALUE_ACTIVE ? GPIO_HIGH : GPIO_LOW;
+#else
+    (void)pin;
+    return GPIO_LOW;
+#endif
 }
 
 int hal_gpio_set_pwm(uint32_t pin, uint32_t frequency, uint32_t duty_cycle) {
