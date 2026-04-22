@@ -3537,8 +3537,18 @@ def touch_thread(driver):
             time.sleep(0.01)
             rst.set_value(17, Value.ACTIVE)
             time.sleep(0.05)
-            
-        bus = smbus2.SMBus(3)
+
+        bus = None
+        for bus_num in (1, 3):
+            try:
+                bus = smbus2.SMBus(bus_num)
+                break
+            except Exception:
+                bus = None
+
+        if bus is None:
+            return
+
         try:
             bus.write_byte_data(0x15, 0xFE, 0x01) 
             bus.write_byte_data(0x15, 0xFA, 0x41) 
