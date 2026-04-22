@@ -12,6 +12,7 @@ import math
 import time
 import threading
 import random
+import numpy as np
 from PIL import Image, ImageDraw
 
 from badapple_waveshare import DisplayDriver, LCD_WIDTH, LCD_HEIGHT
@@ -31,6 +32,10 @@ class PondAssets:
             self._make_lilypad_sprite(128, 102, notch_angle=-0.5, hue_shift=-6),
         ]
         self.bg = self._make_background()
+        self.grid_x, self.grid_y = np.meshgrid(
+            np.arange(LCD_WIDTH, dtype=np.float32),
+            np.arange(LCD_HEIGHT, dtype=np.float32),
+        )
 
     def _make_background(self):
         img = Image.new("RGB", (LCD_WIDTH, LCD_HEIGHT))
@@ -369,6 +374,64 @@ class Pond:
         self.fish = [Koi(LCD_WIDTH/2 + random.uniform(-50,50), LCD_HEIGHT/2 + random.uniform(-50,50)) for _ in range(6)]
         self.ripples = [] 
         self.touch_points = []
+        self.start_time = time.time()
+
+    def _apply_floor_shimmer(self, img, now):
+        img_arr = np.array(img, dtype=np.float32)
+        xs = assets.grid_x
+        ys = assets.grid_y
+
+        bottom_mask = np.clip((ys - (LCD_HEIGHT * 0.34)) / (LCD_HEIGHT * 0.66), 0.0, 1.0)
+        drift = np.sin((xs * 0.018) + now * 0.7) * 10.0
+        caustic_y = ys + drift
+
+        wave1 = np.sin(xs * 0.095 + now * 2.8 + np.sin(caustic_y * 0.052 - now * 1.4) * 1.8)
+        wave2 = np.sin((xs + caustic_y) * 0.062 - now * 3.2)
+        wave3 = np.sin(np.hypot(xs - LCD_WIDTH * 0.55, caustic_y - LCD_HEIGHT * 0.88) * 0.115 - now * 2.0)
+
+        caustic = np.maximum(0.0, wave1 + wave2 * 0.75 + wave3 * 0.65 - 1.15)
+        caustic = (caustic ** 1.6) * bottom_mask * 42.0
+
+        img_arr[..., 0] = np.clip(img_arr[..., 0] + caustic * 0.38, 0, 255)
+        img_arr[..., 1] = np.clip(img_arr[..., 1] + caustic * 0.85, 0, 255)
+        img_arr[..., 2] = np.clip(img_arr[..., 2] + caustic * 0.58, 0, 255)
+
+        return Image.fromarray(img_arr.astype(np.uint8), "RGB")
+
+    def _apply_ripple_distortion(self, img, now):
+        if not self.ripples:
+            return img
+
+        src = np.asarray(img, dtype=np.uint8)
+        xs = assets.grid_x
+        ys = assets.grid_y
+        offset_x = np.zeros_like(xs)
+        offset_y = np.zeros_like(ys)
+        highlight = np.zeros_like(xs)
+
+        for rx, ry, rad, alpha in self.ripples:
+            dx = xs - rx
+            dy = ys - ry
+            dist = np.hypot(dx, dy)
+            safe_dist = np.maximum(dist, 1.0)
+            ring_width = 5.5 + (rad * 0.02)
+            ring = np.exp(-((dist - rad) ** 2) / (2.0 * ring_width * ring_width))
+            wave = np.sin((dist - rad) * 0.85 - now * 10.0)
+            strength = ring * wave * alpha * (3.5 + rad * 0.015)
+
+            offset_x += (dx / safe_dist) * strength
+            offset_y += (dy / safe_dist) * strength * 0.7
+            highlight += ring * np.clip(wave, 0.0, 1.0) * alpha * 18.0
+
+        sample_x = np.clip(np.rint(xs - offset_x), 0, LCD_WIDTH - 1).astype(np.int16)
+        sample_y = np.clip(np.rint(ys - offset_y), 0, LCD_HEIGHT - 1).astype(np.int16)
+
+        refracted = src[sample_y, sample_x].astype(np.float32)
+        refracted[..., 0] = np.clip(refracted[..., 0] + highlight * 0.30, 0, 255)
+        refracted[..., 1] = np.clip(refracted[..., 1] + highlight * 0.65, 0, 255)
+        refracted[..., 2] = np.clip(refracted[..., 2] + highlight * 0.90, 0, 255)
+
+        return Image.fromarray(refracted.astype(np.uint8), "RGB")
     
     def add_ripple(self, x, y):
         self.ripples.append([x, y, 0, 1.0])
@@ -390,19 +453,37 @@ class Pond:
         self.touch_points = [t for t in self.touch_points if t["life"] > 0]
 
     def render(self):
+        now = time.time() - self.start_time
         img = assets.bg.copy()
-        draw = ImageDraw.Draw(img)
+        img = self._apply_floor_shimmer(img, now)
         
         for f in self.fish:
             f.draw(img)
+
+        img = self._apply_ripple_distortion(img, now)
             
         for pad in self.lilypads:
             pad.draw(img)
+
+        draw = ImageDraw.Draw(img)
             
         for r in self.ripples:
-            alpha = int(255 * r[3])
+            alpha = max(0.0, min(1.0, r[3]))
             rad = r[2]
-            draw.ellipse((r[0]-rad, r[1]-rad, r[0]+rad, r[1]+rad), outline=(100, 200, 220))
+            ring_color = (
+                int(90 + 90 * alpha),
+                int(170 + 60 * alpha),
+                int(200 + 40 * alpha),
+            )
+            inner_color = (
+                int(120 + 80 * alpha),
+                int(205 + 35 * alpha),
+                int(225 + 25 * alpha),
+            )
+            draw.ellipse((r[0]-rad, r[1]-rad, r[0]+rad, r[1]+rad), outline=ring_color, width=2)
+            if rad > 8:
+                inner = rad - 4
+                draw.ellipse((r[0]-inner, r[1]-inner, r[0]+inner, r[1]+inner), outline=inner_color, width=1)
             
         return img
 
@@ -461,7 +542,6 @@ def main():
     print("Running Koi pond...")
     try:
         last_touch = False
-        import numpy as np
         while True:
             t0 = time.time()
             if is_touched and not last_touch:
