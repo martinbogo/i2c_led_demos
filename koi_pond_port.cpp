@@ -1630,15 +1630,17 @@ void touch_thread_func() {
         hal_gpio_write(TOUCH_RST_GPIO, GPIO_HIGH);
         hal_delay_ms(200);
 
+        const char* touch_bus_path = kTouchI2CPrimary;
         bool i2c_ok = hal_i2c_init(kTouchI2CPrimary) == 0;
         if (!i2c_ok) {
+            touch_bus_path = kTouchI2CFallback;
             i2c_ok = hal_i2c_init(kTouchI2CFallback) == 0;
         }
         if (!i2c_ok) {
             touch_debug_log("failed to open CST816S on configured I2C buses");
             return;
         }
-        touch_debug_log(std::string("opened CST816S on ") + (i2c_ok ? "configured I2C bus" : "fallback I2C bus"));
+        touch_debug_log(std::string("opened CST816S on ") + touch_bus_path);
         hal_i2c_write_byte(kTouchAddr, 0xFE, 0x01);
         hal_i2c_write_byte(kTouchAddr, 0xFA, 0x41);
         hal_i2c_write_byte(kTouchAddr, 0xEC, 0x07);

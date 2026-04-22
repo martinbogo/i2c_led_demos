@@ -3722,9 +3722,11 @@ def touch_thread(driver, debug=False):
             time.sleep(0.2)
 
         bus = None
+        opened_bus_num = None
         for bus_num in (1, 3):
             try:
                 bus = smbus2.SMBus(bus_num)
+                opened_bus_num = bus_num
                 break
             except Exception:
                 bus = None
@@ -3733,7 +3735,7 @@ def touch_thread(driver, debug=False):
             _touch_debug_log(debug, "failed to open CST816S on I2C bus 1 or 3")
             return
 
-        _touch_debug_log(debug, f"opened CST816S on I2C bus {bus.fd}")
+        _touch_debug_log(debug, f"opened CST816S on I2C bus {opened_bus_num}")
 
         try:
             bus.write_byte_data(0x15, 0xFE, 0x01)
