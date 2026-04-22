@@ -2939,6 +2939,23 @@ class Koi:
     def _panic_turn_response(self):
         return self._scale_from_trait(0.14, 0.20, 0.28)
 
+    def _calmness(self):
+        return 1.0 - max(0.0, min(1.0, self.scared / 9.0))
+
+    def _nearest_pellet(self, pellets):
+        if not pellets:
+            return None, None
+
+        nearest = None
+        nearest_dist = None
+        for pellet in pellets:
+            px, py = pellet["pos"]
+            dist = math.hypot(px - self.pos[0], py - self.pos[1])
+            if nearest is None or dist < nearest_dist:
+                nearest = pellet
+                nearest_dist = dist
+        return nearest, nearest_dist
+
     def _free_swim_boundary_acceleration(self, force_scale=0.06, slack=36.0):
         ax = 0.0
         ay = 0.0
@@ -3032,7 +3049,7 @@ class Koi:
             color = (*mark["color"], mark["alpha"])
             draw.ellipse((center_x - rx, center_y - ry, center_x + rx, center_y + ry), fill=color)
 
-    def update(self, target=None, flee_points=None, lilypads=None):
+    def update(self, target=None, flee_points=None, lilypads=None, pellets=None):
         if not hasattr(self, 'hiding_state'):
             self.hiding_state = "normal" # normal, hiding, hidden, returning
             self.hide_timer = 0
@@ -3072,20 +3089,42 @@ class Koi:
                     dist = (LCD_WIDTH / 2.0) + (self.scared / 9.0) * (LCD_WIDTH)
                     self.hide_target = [self.pos[0] + math.cos(angle)*dist, self.pos[1] + math.sin(angle)*dist]
                 
+        pellet_target = None
+        pellet_dist = None
+        if pellets and self.hiding_state in ("normal", "returning"):
+            pellet_target, pellet_dist = self._nearest_pellet(pellets)
+
         if self.hiding_state == "normal":
             # Basic wandering behavior
-            wander_span = self._cruise_turn_span()
-            wander_angle = random.uniform(-wander_span, wander_span)
-            current_angle = math.atan2(self.vel[1], self.vel[0])
-            new_angle = current_angle + wander_angle
-            
-            # Let fish drift off screen briefly before nudging them back.
-            bound_ax, bound_ay = self._free_swim_boundary_acceleration(force_scale=0.065, slack=38.0)
-            ax += bound_ax
-            ay += bound_ay
-                
-            self.vel[0] = math.cos(new_angle) * speed + ax
-            self.vel[1] = math.sin(new_angle) * speed + ay
+            if pellet_target is not None:
+                calmness = self._calmness()
+                dx = pellet_target["pos"][0] - self.pos[0]
+                dy = pellet_target["pos"][1] - self.pos[1]
+                if pellet_dist and pellet_dist > 0.001:
+                    current_angle = math.atan2(self.vel[1], self.vel[0])
+                    target_angle = math.atan2(dy, dx)
+                    diff = (target_angle - current_angle + math.pi) % (2 * math.pi) - math.pi
+                    jitter = random.uniform(-(0.03 + (1.0 - calmness) * 0.10), 0.03 + (1.0 - calmness) * 0.10)
+                    new_angle = current_angle + diff * (0.10 + calmness * 0.22) + jitter
+                    speed = self._cruise_speed() * (0.72 + calmness * 0.98)
+                    bound_ax, bound_ay = self._free_swim_boundary_acceleration(force_scale=0.055, slack=42.0)
+                    ax += bound_ax * 0.45
+                    ay += bound_ay * 0.45
+                    self.vel[0] = math.cos(new_angle) * speed + ax
+                    self.vel[1] = math.sin(new_angle) * speed + ay
+            else:
+                wander_span = self._cruise_turn_span()
+                wander_angle = random.uniform(-wander_span, wander_span)
+                current_angle = math.atan2(self.vel[1], self.vel[0])
+                new_angle = current_angle + wander_angle
+
+                # Let fish drift off screen briefly before nudging them back.
+                bound_ax, bound_ay = self._free_swim_boundary_acceleration(force_scale=0.065, slack=38.0)
+                ax += bound_ax
+                ay += bound_ay
+
+                self.vel[0] = math.cos(new_angle) * speed + ax
+                self.vel[1] = math.sin(new_angle) * speed + ay
             
         elif self.hiding_state == "hiding":
             speed = (3.0 + (self.scared / 9.0) * 5.0) * self._panic_speed_multiplier()
@@ -3137,26 +3176,45 @@ class Koi:
                 speed = self._return_speed()
                 
         elif self.hiding_state == "returning":
-            speed = self._return_speed() # creep back in slowly
-            
-            # Wander slowly but prefer center
-            return_turn_span = self._return_turn_span()
-            wander_angle = random.uniform(-return_turn_span, return_turn_span)
-            current_angle = math.atan2(self.vel[1], self.vel[0])
-            new_angle = current_angle + wander_angle
-            
-            cx, cy = LCD_WIDTH/2, LCD_HEIGHT/2
-            dx, dy = cx - self.pos[0], cy - self.pos[1]
-            dist_center = math.sqrt(dx**2 + dy**2)
-            bound_ax, bound_ay = self._free_swim_boundary_acceleration(force_scale=0.11, slack=28.0)
-            ax += bound_ax + dx * 0.01
-            ay += bound_ay + dy * 0.01
+            if pellet_target is not None:
+                calmness = self._calmness()
+                dx = pellet_target["pos"][0] - self.pos[0]
+                dy = pellet_target["pos"][1] - self.pos[1]
+                if pellet_dist and pellet_dist > 0.001:
+                    current_angle = math.atan2(self.vel[1], self.vel[0])
+                    target_angle = math.atan2(dy, dx)
+                    diff = (target_angle - current_angle + math.pi) % (2 * math.pi) - math.pi
+                    jitter = random.uniform(-(0.02 + (1.0 - calmness) * 0.08), 0.02 + (1.0 - calmness) * 0.08)
+                    new_angle = current_angle + diff * (0.12 + calmness * 0.20) + jitter
+                    speed = max(self._return_speed(), self._cruise_speed() * (0.64 + calmness * 0.82))
+                    bound_ax, bound_ay = self._free_swim_boundary_acceleration(force_scale=0.09, slack=30.0)
+                    ax += bound_ax * 0.55
+                    ay += bound_ay * 0.55
+                    self.vel[0] = math.cos(new_angle) * speed + ax
+                    self.vel[1] = math.sin(new_angle) * speed + ay
+                    if 0.0 <= self.pos[0] <= LCD_WIDTH and 0.0 <= self.pos[1] <= LCD_HEIGHT:
+                        self.hiding_state = "normal"
+            else:
+                speed = self._return_speed() # creep back in slowly
 
-            if 0.0 <= self.pos[0] <= LCD_WIDTH and 0.0 <= self.pos[1] <= LCD_HEIGHT and dist_center < LCD_WIDTH/2 - 50:
-                self.hiding_state = "normal" # we are back!
-                
-            self.vel[0] = math.cos(new_angle) * speed + ax
-            self.vel[1] = math.sin(new_angle) * speed + ay
+                # Wander slowly but prefer center
+                return_turn_span = self._return_turn_span()
+                wander_angle = random.uniform(-return_turn_span, return_turn_span)
+                current_angle = math.atan2(self.vel[1], self.vel[0])
+                new_angle = current_angle + wander_angle
+
+                cx, cy = LCD_WIDTH/2, LCD_HEIGHT/2
+                dx, dy = cx - self.pos[0], cy - self.pos[1]
+                dist_center = math.sqrt(dx**2 + dy**2)
+                bound_ax, bound_ay = self._free_swim_boundary_acceleration(force_scale=0.11, slack=28.0)
+                ax += bound_ax + dx * 0.01
+                ay += bound_ay + dy * 0.01
+
+                if 0.0 <= self.pos[0] <= LCD_WIDTH and 0.0 <= self.pos[1] <= LCD_HEIGHT and dist_center < LCD_WIDTH/2 - 50:
+                    self.hiding_state = "normal" # we are back!
+
+                self.vel[0] = math.cos(new_angle) * speed + ax
+                self.vel[1] = math.sin(new_angle) * speed + ay
 
         if speed > 0:
             self.normalize(self.vel)
@@ -3324,6 +3382,8 @@ class Pond:
         self.fish = [Koi(LCD_WIDTH/2 + random.uniform(-50,50), LCD_HEIGHT/2 + random.uniform(-50,50)) for _ in range(6)]
         self.ripples = [] 
         self.touch_points = []
+        self.pellets = []
+        self.feed_cooldown_until = 0.0
         self.start_time = time.time()
 
     def _spawn_koi_from_offscreen(self):
@@ -3515,12 +3575,82 @@ class Pond:
         self.ripples.append([x, y, 0, 1.0])
         self.touch_points.append({"pos":(x,y), "life":0.5})
 
+    def add_visual_ripple(self, x, y):
+        self.ripples.append([x, y, 0, 1.0])
+
+    def spawn_fish_from_gesture(self):
+        self.fish.append(self._spawn_koi_from_offscreen())
+
+    def feed_fish(self, x, y):
+        now = time.time()
+        if now < self.feed_cooldown_until:
+            return False
+
+        self.pellets = []
+        for _ in range(random.randint(3, 10)):
+            angle = random.uniform(0.0, math.tau)
+            dist = random.uniform(0.0, 14.0)
+            px = x + math.cos(angle) * dist + random.uniform(-1.5, 1.5)
+            py = y + math.sin(angle) * dist + random.uniform(-1.5, 1.5)
+            px = max(6.0, min(LCD_WIDTH - 6.0, px))
+            py = max(6.0, min(LCD_HEIGHT - 6.0, py))
+            self.pellets.append(
+                {
+                    "pos": [px, py],
+                    "radius": random.uniform(2.0, 3.6),
+                }
+            )
+
+        self.feed_cooldown_until = now + 15.0
+        self.touch_points.clear()
+        self.add_visual_ripple(x, y)
+        return True
+
+    def _consume_pellets_for_fish(self, koi):
+        nearest_index = None
+        nearest_dist = None
+
+        for idx, pellet in enumerate(self.pellets):
+            px, py = pellet["pos"]
+            dist = math.hypot(px - koi.pos[0], py - koi.pos[1])
+            if dist <= pellet["radius"] + 8.0 and (nearest_index is None or dist < nearest_dist):
+                nearest_index = idx
+                nearest_dist = dist
+
+        if nearest_index is None:
+            return False
+
+        pellet = self.pellets.pop(nearest_index)
+        koi.scared = max(0.0, koi.scared - 0.5)
+        self.add_visual_ripple(pellet["pos"][0], pellet["pos"][1])
+        return True
+
+    def _draw_pellets(self, img):
+        if not self.pellets:
+            return img
+
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay, "RGBA")
+
+        for pellet in self.pellets:
+            px, py = pellet["pos"]
+            radius = pellet["radius"]
+            draw.ellipse((px - radius + 1.2, py - radius + 1.4, px + radius + 1.2, py + radius + 1.4), fill=(18, 28, 18, 96))
+            draw.ellipse((px - radius, py - radius, px + radius, py + radius), fill=(206, 142, 74, 220))
+            highlight_r = max(0.8, radius * 0.42)
+            draw.ellipse((px - highlight_r - 0.7, py - highlight_r - 0.8, px + highlight_r - 0.7, py + highlight_r - 0.8), fill=(250, 226, 168, 170))
+
+        composited = Image.alpha_composite(img.convert("RGBA"), overlay)
+        return composited.convert("RGB")
+
     def update(self):
         active_touches = [t["pos"] for t in self.touch_points]
 
         updated_fish = []
         for f in self.fish:
-            f.update(flee_points=active_touches, lilypads=self.lilypads)
+            f.update(flee_points=active_touches, lilypads=self.lilypads, pellets=self.pellets)
+            if self.pellets:
+                self._consume_pellets_for_fish(f)
             if self._should_replace_offscreen_koi(f):
                 updated_fish.append(self._spawn_koi_from_offscreen())
             else:
@@ -3545,6 +3675,7 @@ class Pond:
             f.draw(img)
 
         img = self._apply_ripple_distortion(img, now)
+        img = self._draw_pellets(img)
             
         for pad in self.lilypads:
             pad.draw(img)
@@ -3554,10 +3685,14 @@ class Pond:
         return img
 
 # Shared state
+GESTURE_DOUBLE_TAP = 0x0B
+GESTURE_LONG_PRESS = 0x0C
+
 touch_x, touch_y, is_touched = -1, -1, False
+gesture_x, gesture_y, gesture_code, gesture_seq = -1, -1, 0, 0
 
 def touch_thread(driver):
-    global touch_x, touch_y, is_touched
+    global touch_x, touch_y, is_touched, gesture_x, gesture_y, gesture_code, gesture_seq
     try:
         if "gpiod" in globals():
             from gpiod.line import Direction, Value
@@ -3584,14 +3719,28 @@ def touch_thread(driver):
         except:
             pass
 
+        last_double_tap_emit = 0.0
+        last_long_press_emit = 0.0
+
         while True:
             try:
                 data = bus.read_i2c_block_data(0x15, 0x01, 6)
-                if data[1] > 0: 
+                gesture = data[0]
+                if data[1] > 0 or gesture in (GESTURE_DOUBLE_TAP, GESTURE_LONG_PRESS):
                     x = ((data[2] & 0x0F) << 8) | data[3]
                     y = ((data[4] & 0x0F) << 8) | data[5]
                     x = (LCD_WIDTH - 1) - x
                     touch_x, touch_y, is_touched = x, y, True
+
+                    now = time.monotonic()
+                    if gesture == GESTURE_DOUBLE_TAP and now - last_double_tap_emit > 0.35:
+                        gesture_x, gesture_y, gesture_code = x, y, gesture
+                        gesture_seq += 1
+                        last_double_tap_emit = now
+                    elif gesture == GESTURE_LONG_PRESS and now - last_long_press_emit > 1.10:
+                        gesture_x, gesture_y, gesture_code = x, y, gesture
+                        gesture_seq += 1
+                        last_long_press_emit = now
                 else:
                     is_touched = False
             except Exception:
@@ -3601,7 +3750,7 @@ def touch_thread(driver):
         pass
 
 def main():
-    global assets, is_touched
+    global assets, is_touched, gesture_seq, gesture_code, gesture_x, gesture_y
     print("Loading assets...")
     assets = PondAssets()
     
@@ -3629,8 +3778,16 @@ def main():
     print("Running Koi pond...")
     try:
         last_touch = False
+        last_gesture_seq = 0
         while not stop_requested:
             t0 = time.time()
+            if gesture_seq != last_gesture_seq:
+                last_gesture_seq = gesture_seq
+                if gesture_code == GESTURE_DOUBLE_TAP:
+                    pond.spawn_fish_from_gesture()
+                elif gesture_code == GESTURE_LONG_PRESS:
+                    pond.feed_fish(gesture_x, gesture_y)
+
             if is_touched and not last_touch:
                 pond.add_ripple(touch_x, touch_y)
             last_touch = is_touched

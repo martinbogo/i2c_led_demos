@@ -42,6 +42,8 @@ constexpr const char* kTouchI2CPrimary = TOUCH_I2C_BUS;
 constexpr const char* kTouchI2CFallback = "/dev/i2c-3";
 constexpr std::uint8_t kTouchAddr = 0x15;
 constexpr std::uint32_t kSpiSpeedHz = SPI_SPEED_HZ;
+constexpr std::uint8_t kGestureDoubleTap = 0x0B;
+constexpr std::uint8_t kGestureLongPress = 0x0C;
 
 struct Vec2 {
     float x = 0.0F;
@@ -78,6 +80,11 @@ struct Ripple {
 struct TouchPoint {
     Vec2 pos;
     float life = 0.0F;
+};
+
+struct FoodPellet {
+    Vec2 pos;
+    float radius = 2.5F;
 };
 
 float clamp_float(float value, float lo, float hi) {
@@ -435,6 +442,23 @@ void draw_filled_polygon(RGBAImage& image, const std::vector<Vec2>& polygon, con
 
 void draw_disc(RGBAImage& image, float cx, float cy, float radius, const ColorRGBA& color) {
     draw_filled_ellipse(image, cx - radius, cy - radius, cx + radius, cy + radius, color);
+}
+
+void draw_disc_rgb(RGBImage& image, float cx, float cy, float radius, const ColorRGBA& color) {
+    const int x0 = clamp_int(static_cast<int>(std::floor(cx - radius)), 0, image.width - 1);
+    const int x1 = clamp_int(static_cast<int>(std::ceil(cx + radius)), 0, image.width - 1);
+    const int y0 = clamp_int(static_cast<int>(std::floor(cy - radius)), 0, image.height - 1);
+    const int y1 = clamp_int(static_cast<int>(std::ceil(cy + radius)), 0, image.height - 1);
+    const float r2 = radius * radius;
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            const float dx = (static_cast<float>(x) + 0.5F) - cx;
+            const float dy = (static_cast<float>(y) + 0.5F) - cy;
+            if ((dx * dx) + (dy * dy) <= r2) {
+                alpha_blend_pixel(image, x, y, color);
+            }
+        }
+    }
 }
 
 [[maybe_unused]] void draw_line(RGBAImage& image, float x0, float y0, float x1, float y1, float width, const ColorRGBA& color) {
@@ -808,6 +832,7 @@ public:
     float return_turn_span() const { return scale_from_trait(0.18F, 0.50F, 0.80F); }
     float panic_speed_multiplier() const { return scale_from_trait(0.82F, 1.00F, 1.18F); }
     float panic_turn_response() const { return scale_from_trait(0.14F, 0.20F, 0.28F); }
+    float calmness() const { return 1.0F - clamp_float(scared / 9.0F, 0.0F, 1.0F); }
 
     Vec2 free_swim_boundary_acceleration(float force_scale = 0.06F, float slack = 36.0F) const {
         Vec2 accel{};
@@ -901,7 +926,7 @@ public:
         }
     }
 
-    void update(const std::vector<Vec2>& flee_points, const std::vector<Lilypad>& lilypads, double now) {
+    void update(const std::vector<Vec2>& flee_points, const std::vector<Lilypad>& lilypads, const std::vector<FoodPellet>* pellets, double now) {
         float speed = cruise_speed();
         float ax = 0.0F;
         float ay = 0.0F;
@@ -928,14 +953,44 @@ public:
             }
         }
 
+        const FoodPellet* pellet_target = nullptr;
+        float pellet_dist = std::numeric_limits<float>::max();
+        if (pellets != nullptr && !pellets->empty() && (hiding_state == HidingState::Normal || hiding_state == HidingState::Returning)) {
+            for (const auto& pellet : *pellets) {
+                const float dx = pellet.pos.x - pos.x;
+                const float dy = pellet.pos.y - pos.y;
+                const float dist = std::sqrt(dx * dx + dy * dy);
+                if (dist < pellet_dist) {
+                    pellet_dist = dist;
+                    pellet_target = &pellet;
+                }
+            }
+        }
+
         if (hiding_state == HidingState::Normal) {
-            const float wander_angle = random_uniform(-cruise_turn_span(), cruise_turn_span());
-            const float current_angle = std::atan2(vel.y, vel.x);
-            const float new_angle = current_angle + wander_angle;
-            const Vec2 boundary_accel = free_swim_boundary_acceleration(0.065F, 38.0F);
-            ax += boundary_accel.x;
-            ay += boundary_accel.y;
-            vel = {std::cos(new_angle) * speed + ax, std::sin(new_angle) * speed + ay};
+            if (pellet_target != nullptr && pellet_dist > 0.001F) {
+                const float calm = calmness();
+                const float dx = pellet_target->pos.x - pos.x;
+                const float dy = pellet_target->pos.y - pos.y;
+                const float current_angle = std::atan2(vel.y, vel.x);
+                const float target_angle = std::atan2(dy, dx);
+                const float diff = std::fmod((target_angle - current_angle + static_cast<float>(M_PI) * 3.0F), static_cast<float>(M_PI) * 2.0F) - static_cast<float>(M_PI);
+                const float jitter_span = 0.03F + (1.0F - calm) * 0.10F;
+                const float new_angle = current_angle + diff * (0.10F + calm * 0.22F) + random_uniform(-jitter_span, jitter_span);
+                speed = cruise_speed() * (0.72F + calm * 0.98F);
+                const Vec2 boundary_accel = free_swim_boundary_acceleration(0.055F, 42.0F);
+                ax += boundary_accel.x * 0.45F;
+                ay += boundary_accel.y * 0.45F;
+                vel = {std::cos(new_angle) * speed + ax, std::sin(new_angle) * speed + ay};
+            } else {
+                const float wander_angle = random_uniform(-cruise_turn_span(), cruise_turn_span());
+                const float current_angle = std::atan2(vel.y, vel.x);
+                const float new_angle = current_angle + wander_angle;
+                const Vec2 boundary_accel = free_swim_boundary_acceleration(0.065F, 38.0F);
+                ax += boundary_accel.x;
+                ay += boundary_accel.y;
+                vel = {std::cos(new_angle) * speed + ax, std::sin(new_angle) * speed + ay};
+            }
         } else if (hiding_state == HidingState::Hiding) {
             speed = (3.0F + (scared / 9.0F) * 5.0F) * panic_speed_multiplier();
             const float dx = hide_target.x - pos.x;
@@ -972,22 +1027,41 @@ public:
                 speed = return_speed();
             }
         } else {
-            speed = return_speed();
-            const float wander_angle = random_uniform(-return_turn_span(), return_turn_span());
-            const float current_angle = std::atan2(vel.y, vel.x);
-            const float new_angle = current_angle + wander_angle;
-            const float cx = kLcdWidth * 0.5F;
-            const float cy = kLcdHeight * 0.5F;
-            const float dx = cx - pos.x;
-            const float dy = cy - pos.y;
-            const float dist_center = std::sqrt(dx * dx + dy * dy);
-            const Vec2 boundary_accel = free_swim_boundary_acceleration(0.11F, 28.0F);
-            ax += boundary_accel.x + dx * 0.01F;
-            ay += boundary_accel.y + dy * 0.01F;
-            if (pos.x >= 0.0F && pos.x <= kLcdWidth && pos.y >= 0.0F && pos.y <= kLcdHeight && dist_center < kLcdWidth / 2.0F - 50.0F) {
-                hiding_state = HidingState::Normal;
+            if (pellet_target != nullptr && pellet_dist > 0.001F) {
+                const float calm = calmness();
+                const float dx = pellet_target->pos.x - pos.x;
+                const float dy = pellet_target->pos.y - pos.y;
+                const float current_angle = std::atan2(vel.y, vel.x);
+                const float target_angle = std::atan2(dy, dx);
+                const float diff = std::fmod((target_angle - current_angle + static_cast<float>(M_PI) * 3.0F), static_cast<float>(M_PI) * 2.0F) - static_cast<float>(M_PI);
+                const float jitter_span = 0.02F + (1.0F - calm) * 0.08F;
+                const float new_angle = current_angle + diff * (0.12F + calm * 0.20F) + random_uniform(-jitter_span, jitter_span);
+                speed = std::max(return_speed(), cruise_speed() * (0.64F + calm * 0.82F));
+                const Vec2 boundary_accel = free_swim_boundary_acceleration(0.09F, 30.0F);
+                ax += boundary_accel.x * 0.55F;
+                ay += boundary_accel.y * 0.55F;
+                vel = {std::cos(new_angle) * speed + ax, std::sin(new_angle) * speed + ay};
+                if (pos.x >= 0.0F && pos.x <= kLcdWidth && pos.y >= 0.0F && pos.y <= kLcdHeight) {
+                    hiding_state = HidingState::Normal;
+                }
+            } else {
+                speed = return_speed();
+                const float wander_angle = random_uniform(-return_turn_span(), return_turn_span());
+                const float current_angle = std::atan2(vel.y, vel.x);
+                const float new_angle = current_angle + wander_angle;
+                const float cx = kLcdWidth * 0.5F;
+                const float cy = kLcdHeight * 0.5F;
+                const float dx = cx - pos.x;
+                const float dy = cy - pos.y;
+                const float dist_center = std::sqrt(dx * dx + dy * dy);
+                const Vec2 boundary_accel = free_swim_boundary_acceleration(0.11F, 28.0F);
+                ax += boundary_accel.x + dx * 0.01F;
+                ay += boundary_accel.y + dy * 0.01F;
+                if (pos.x >= 0.0F && pos.x <= kLcdWidth && pos.y >= 0.0F && pos.y <= kLcdHeight && dist_center < kLcdWidth / 2.0F - 50.0F) {
+                    hiding_state = HidingState::Normal;
+                }
+                vel = {std::cos(new_angle) * speed + ax, std::sin(new_angle) * speed + ay};
             }
-            vel = {std::cos(new_angle) * speed + ax, std::sin(new_angle) * speed + ay};
         }
 
         if (speed > 0.0F) {
@@ -1095,6 +1169,8 @@ public:
     std::vector<Koi> fish;
     std::vector<Ripple> ripples;
     std::vector<TouchPoint> touch_points;
+    std::vector<FoodPellet> pellets;
+    double feed_cooldown_until = 0.0;
     double start_time = now_seconds();
 
     Pond() {
@@ -1199,6 +1275,44 @@ public:
         touch_points.push_back({{x, y}, 0.5F});
     }
 
+    void add_visual_ripple(float x, float y) {
+        ripples.push_back({x, y, 0.0F, 1.0F});
+    }
+
+    void spawn_fish_from_gesture() {
+        fish.push_back(spawn_koi_from_offscreen());
+    }
+
+    bool feed_fish(float x, float y, double now) {
+        if (now < feed_cooldown_until) {
+            return false;
+        }
+
+        pellets.clear();
+        const int pellet_count = random_int(3, 10);
+        pellets.reserve(static_cast<std::size_t>(pellet_count));
+        for (int i = 0; i < pellet_count; ++i) {
+            const float angle = random_uniform(0.0F, kTwoPi);
+            const float dist = random_uniform(0.0F, 14.0F);
+            const float px = clamp_float(x + std::cos(angle) * dist + random_uniform(-1.5F, 1.5F), 6.0F, kLcdWidth - 6.0F);
+            const float py = clamp_float(y + std::sin(angle) * dist + random_uniform(-1.5F, 1.5F), 6.0F, kLcdHeight - 6.0F);
+            pellets.push_back({{px, py}, random_uniform(2.0F, 3.6F)});
+        }
+
+        feed_cooldown_until = now + 15.0;
+        touch_points.clear();
+        add_visual_ripple(x, y);
+        return true;
+    }
+
+    void draw_pellets(RGBImage& image) const {
+        for (const auto& pellet : pellets) {
+            draw_disc_rgb(image, pellet.pos.x + 1.2F, pellet.pos.y + 1.4F, pellet.radius + 0.6F, {18, 28, 18, 96});
+            draw_disc_rgb(image, pellet.pos.x, pellet.pos.y, pellet.radius, {206, 142, 74, 220});
+            draw_disc_rgb(image, pellet.pos.x - 0.7F, pellet.pos.y - 0.8F, std::max(0.8F, pellet.radius * 0.42F), {250, 226, 168, 170});
+        }
+    }
+
     void update(double now) {
         std::vector<Vec2> active_touches;
         active_touches.reserve(touch_points.size());
@@ -1209,7 +1323,26 @@ public:
         std::vector<Koi> updated;
         updated.reserve(fish.size());
         for (auto& koi : fish) {
-            koi.update(active_touches, lilypads, now);
+            koi.update(active_touches, lilypads, &pellets, now);
+
+            int eaten_idx = -1;
+            float eaten_dist = std::numeric_limits<float>::max();
+            for (std::size_t idx = 0; idx < pellets.size(); ++idx) {
+                const float dx = pellets[idx].pos.x - koi.pos.x;
+                const float dy = pellets[idx].pos.y - koi.pos.y;
+                const float dist = std::sqrt(dx * dx + dy * dy);
+                if (dist <= pellets[idx].radius + 8.0F && dist < eaten_dist) {
+                    eaten_idx = static_cast<int>(idx);
+                    eaten_dist = dist;
+                }
+            }
+            if (eaten_idx >= 0) {
+                const auto pellet_pos = pellets[static_cast<std::size_t>(eaten_idx)].pos;
+                pellets.erase(pellets.begin() + eaten_idx);
+                koi.scared = std::max(0.0F, koi.scared - 0.5F);
+                add_visual_ripple(pellet_pos.x, pellet_pos.y);
+            }
+
             if (should_replace_offscreen_koi(koi, now)) {
                 updated.push_back(spawn_koi_from_offscreen());
             } else {
@@ -1442,6 +1575,7 @@ public:
             koi.draw(img);
         }
         img = apply_ripple_distortion(img, rel_now);
+        draw_pellets(img);
         for (const auto& pad : lilypads) {
             pad.draw(img);
         }
@@ -1452,6 +1586,10 @@ public:
 
 std::atomic<int> g_touch_x{-1};
 std::atomic<int> g_touch_y{-1};
+std::atomic<int> g_gesture_x{-1};
+std::atomic<int> g_gesture_y{-1};
+std::atomic<int> g_gesture_code{0};
+std::atomic<std::uint64_t> g_gesture_sequence{0};
 std::atomic<bool> g_is_touched{false};
 std::atomic<bool> g_stop_touch{false};
 std::atomic<bool> g_should_exit{false};
@@ -1480,14 +1618,35 @@ void touch_thread_func() {
 
         while (!g_stop_touch.load()) {
             std::uint8_t data[6] = {0, 0, 0, 0, 0, 0};
-            if (hal_i2c_read_bytes(kTouchAddr, 0x01, data, 6) == 0 && data[1] > 0) {
+            if (hal_i2c_read_bytes(kTouchAddr, 0x01, data, 6) == 0) {
+                const int gesture = data[0];
                 const int x = ((data[2] & 0x0F) << 8) | data[3];
                 const int y = ((data[4] & 0x0F) << 8) | data[5];
-                g_touch_x.store((kLcdWidth - 1) - x);
-                g_touch_y.store(y);
-                g_is_touched.store(true);
-            } else {
-                g_is_touched.store(false);
+                const int mapped_x = (kLcdWidth - 1) - x;
+                if (data[1] > 0 || gesture == kGestureDoubleTap || gesture == kGestureLongPress) {
+                    g_touch_x.store(mapped_x);
+                    g_touch_y.store(y);
+                    g_is_touched.store(data[1] > 0);
+
+                    const double now = now_seconds();
+                    static double last_double_tap_emit = -10.0;
+                    static double last_long_press_emit = -10.0;
+                    if (gesture == kGestureDoubleTap && now - last_double_tap_emit > 0.35) {
+                        g_gesture_x.store(mapped_x);
+                        g_gesture_y.store(y);
+                        g_gesture_code.store(gesture);
+                        g_gesture_sequence.fetch_add(1);
+                        last_double_tap_emit = now;
+                    } else if (gesture == kGestureLongPress && now - last_long_press_emit > 1.10) {
+                        g_gesture_x.store(mapped_x);
+                        g_gesture_y.store(y);
+                        g_gesture_code.store(gesture);
+                        g_gesture_sequence.fetch_add(1);
+                        last_long_press_emit = now;
+                    }
+                } else {
+                    g_is_touched.store(false);
+                }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
@@ -1524,8 +1683,20 @@ int koi_pond_run() {
         std::cout << "Running Koi pond..." << std::endl;
 
         bool last_touch = false;
+        std::uint64_t last_gesture_sequence = 0;
         while (!g_should_exit.load()) {
             const auto frame_start = std::chrono::steady_clock::now();
+            const auto gesture_sequence = g_gesture_sequence.load();
+            if (gesture_sequence != last_gesture_sequence) {
+                last_gesture_sequence = gesture_sequence;
+                const int gesture = g_gesture_code.load();
+                if (gesture == kGestureDoubleTap) {
+                    pond.spawn_fish_from_gesture();
+                } else if (gesture == kGestureLongPress) {
+                    pond.feed_fish(static_cast<float>(g_gesture_x.load()), static_cast<float>(g_gesture_y.load()), now_seconds());
+                }
+            }
+
             const bool is_touched = g_is_touched.load();
             if (is_touched && !last_touch) {
                 pond.add_ripple(static_cast<float>(g_touch_x.load()), static_cast<float>(g_touch_y.load()));
