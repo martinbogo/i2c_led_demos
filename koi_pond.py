@@ -2866,6 +2866,8 @@ class Lilypad:
             pass
 
 class Koi:
+    PELLET_EAT_COOLDOWN_SECONDS = 1.0
+
     @staticmethod
     def _sample_swim_speed_trait():
         for _ in range(12):
@@ -2881,6 +2883,7 @@ class Koi:
         self.hide_target = None
         self.scared = random.uniform(0, 9.0)
         self.swim_speed_trait = self._sample_swim_speed_trait()
+        self.last_pellet_eat_time = -1e9
         self.offscreen_replacement_checked = False
         self.offscreen_since = None
         self.vel = [random.uniform(-1, 1), random.uniform(-1, 1)]
@@ -2944,6 +2947,9 @@ class Koi:
         return 1.0 - max(0.0, min(1.0, self.scared / 9.0))
 
     def _nearest_pellet(self, pellets):
+        if time.time() - self.last_pellet_eat_time < self.PELLET_EAT_COOLDOWN_SECONDS:
+            return None, None
+
         if not pellets:
             return None, None
 
@@ -3344,6 +3350,8 @@ class Koi:
         img_bg.paste(composited.convert("RGB"))
 
 class Pond:
+    FEED_COOLDOWN_SECONDS = 3.0
+
     def _generate_lilypads(self):
         lilypads = []
         count = random.randint(3, 6)
@@ -3588,9 +3596,18 @@ class Pond:
             return False
 
         self.pellets = []
+        for koi in self.fish:
+            if koi.hiding_state != "normal":
+                koi.hiding_state = "returning"
+                koi.hide_timer = 0
+                koi.hide_target = [x, y]
+                koi.offscreen_since = None
+                koi.offscreen_replacement_checked = False
+                koi.scared = max(0.0, koi.scared - 1.0)
+
         for _ in range(random.randint(3, 10)):
             angle = random.uniform(0.0, math.tau)
-            dist = random.uniform(0.0, 14.0)
+            dist = random.uniform(0.0, 18.0)
             px = x + math.cos(angle) * dist + random.uniform(-1.5, 1.5)
             py = y + math.sin(angle) * dist + random.uniform(-1.5, 1.5)
             px = max(6.0, min(LCD_WIDTH - 6.0, px))
@@ -3598,16 +3615,20 @@ class Pond:
             self.pellets.append(
                 {
                     "pos": [px, py],
-                    "radius": random.uniform(2.0, 3.6),
+                    "radius": random.uniform(3.4, 5.2),
                 }
             )
 
-        self.feed_cooldown_until = now + 15.0
+        self.feed_cooldown_until = now + self.FEED_COOLDOWN_SECONDS
         self.touch_points.clear()
         self.add_visual_ripple(x, y)
         return True
 
     def _consume_pellets_for_fish(self, koi):
+        now = time.time()
+        if now - koi.last_pellet_eat_time < koi.PELLET_EAT_COOLDOWN_SECONDS:
+            return False
+
         nearest_index = None
         nearest_dist = None
 
@@ -3622,6 +3643,7 @@ class Pond:
             return False
 
         pellet = self.pellets.pop(nearest_index)
+        koi.last_pellet_eat_time = now
         koi.scared = max(0.0, koi.scared - 0.5)
         self.add_visual_ripple(pellet["pos"][0], pellet["pos"][1])
         return True
@@ -3636,10 +3658,12 @@ class Pond:
         for pellet in self.pellets:
             px, py = pellet["pos"]
             radius = pellet["radius"]
-            draw.ellipse((px - radius + 1.2, py - radius + 1.4, px + radius + 1.2, py + radius + 1.4), fill=(18, 28, 18, 96))
-            draw.ellipse((px - radius, py - radius, px + radius, py + radius), fill=(206, 142, 74, 220))
-            highlight_r = max(0.8, radius * 0.42)
-            draw.ellipse((px - highlight_r - 0.7, py - highlight_r - 0.8, px + highlight_r - 0.7, py + highlight_r - 0.8), fill=(250, 226, 168, 170))
+            ring_r = radius + 3.2
+            draw.ellipse((px - ring_r, py - ring_r, px + ring_r, py + ring_r), outline=(255, 244, 196, 120), width=1)
+            draw.ellipse((px - radius + 1.2, py - radius + 1.4, px + radius + 1.2, py + radius + 1.4), fill=(18, 28, 18, 110))
+            draw.ellipse((px - radius, py - radius, px + radius, py + radius), fill=(214, 154, 84, 235))
+            highlight_r = max(1.0, radius * 0.48)
+            draw.ellipse((px - highlight_r - 0.8, py - highlight_r - 0.9, px + highlight_r - 0.8, py + highlight_r - 0.9), fill=(255, 234, 182, 185))
 
         composited = Image.alpha_composite(img.convert("RGBA"), overlay)
         return composited.convert("RGB")
@@ -3676,12 +3700,12 @@ class Pond:
             f.draw(img)
 
         img = self._apply_ripple_distortion(img, now)
-        img = self._draw_pellets(img)
             
         for pad in self.lilypads:
             pad.draw(img)
 
         img = self._apply_lilypad_ripple_reflection(img, now)
+        img = self._draw_pellets(img)
             
         return img
 
@@ -3858,7 +3882,10 @@ def main(argv=None):
                 elif gesture_code == GESTURE_DOUBLE_TAP:
                     pond.spawn_fish_from_gesture()
                 elif gesture_code == GESTURE_LONG_PRESS:
-                    pond.feed_fish(gesture_x, gesture_y)
+                    fed = pond.feed_fish(gesture_x, gesture_y)
+                    if args.debug:
+                        status = "accepted" if fed else "ignored (cooldown)"
+                        print(f"[touch] feed request {status} at ({gesture_x},{gesture_y})", flush=True)
                 
             pond.update()
             img = pond.render()

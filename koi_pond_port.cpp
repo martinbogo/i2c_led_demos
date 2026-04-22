@@ -764,12 +764,15 @@ enum class HidingState {
 
 class Koi {
 public:
+    static constexpr double kPelletEatCooldownSeconds = 1.0;
+
     Vec2 pos;
     HidingState hiding_state = HidingState::Normal;
     double hide_timer = 0.0;
     Vec2 hide_target{};
     float scared = 0.0F;
     float swim_speed_trait = 0.0F;
+    double last_pellet_eat_time = -1.0e9;
     bool offscreen_replacement_checked = false;
     double offscreen_since = -1.0;
     Vec2 vel{};
@@ -956,7 +959,10 @@ public:
 
         const FoodPellet* pellet_target = nullptr;
         float pellet_dist = std::numeric_limits<float>::max();
-        if (pellets != nullptr && !pellets->empty() && (hiding_state == HidingState::Normal || hiding_state == HidingState::Returning)) {
+        if (pellets != nullptr
+            && !pellets->empty()
+            && (hiding_state == HidingState::Normal || hiding_state == HidingState::Returning)
+            && now - last_pellet_eat_time >= kPelletEatCooldownSeconds) {
             for (const auto& pellet : *pellets) {
                 const float dx = pellet.pos.x - pos.x;
                 const float dy = pellet.pos.y - pos.y;
@@ -1166,6 +1172,8 @@ public:
 
 class Pond {
 public:
+    static constexpr double kFeedCooldownSeconds = 3.0;
+
     std::vector<Lilypad> lilypads;
     std::vector<Koi> fish;
     std::vector<Ripple> ripples;
@@ -1290,17 +1298,28 @@ public:
         }
 
         pellets.clear();
+        for (auto& koi : fish) {
+            if (koi.hiding_state != HidingState::Normal) {
+                koi.hiding_state = HidingState::Returning;
+                koi.hide_timer = 0.0;
+                koi.hide_target = {x, y};
+                koi.offscreen_since = -1.0;
+                koi.offscreen_replacement_checked = false;
+                koi.scared = std::max(0.0F, koi.scared - 1.0F);
+            }
+        }
+
         const int pellet_count = random_int(3, 10);
         pellets.reserve(static_cast<std::size_t>(pellet_count));
         for (int i = 0; i < pellet_count; ++i) {
             const float angle = random_uniform(0.0F, kTwoPi);
-            const float dist = random_uniform(0.0F, 14.0F);
+            const float dist = random_uniform(0.0F, 18.0F);
             const float px = clamp_float(x + std::cos(angle) * dist + random_uniform(-1.5F, 1.5F), 6.0F, kLcdWidth - 6.0F);
             const float py = clamp_float(y + std::sin(angle) * dist + random_uniform(-1.5F, 1.5F), 6.0F, kLcdHeight - 6.0F);
-            pellets.push_back({{px, py}, random_uniform(2.0F, 3.6F)});
+            pellets.push_back({{px, py}, random_uniform(3.4F, 5.2F)});
         }
 
-        feed_cooldown_until = now + 15.0;
+        feed_cooldown_until = now + kFeedCooldownSeconds;
         touch_points.clear();
         add_visual_ripple(x, y);
         return true;
@@ -1308,9 +1327,10 @@ public:
 
     void draw_pellets(RGBImage& image) const {
         for (const auto& pellet : pellets) {
-            draw_disc_rgb(image, pellet.pos.x + 1.2F, pellet.pos.y + 1.4F, pellet.radius + 0.6F, {18, 28, 18, 96});
-            draw_disc_rgb(image, pellet.pos.x, pellet.pos.y, pellet.radius, {206, 142, 74, 220});
-            draw_disc_rgb(image, pellet.pos.x - 0.7F, pellet.pos.y - 0.8F, std::max(0.8F, pellet.radius * 0.42F), {250, 226, 168, 170});
+            draw_disc_rgb(image, pellet.pos.x, pellet.pos.y, pellet.radius + 3.2F, {255, 244, 196, 36});
+            draw_disc_rgb(image, pellet.pos.x + 1.2F, pellet.pos.y + 1.4F, pellet.radius + 0.6F, {18, 28, 18, 110});
+            draw_disc_rgb(image, pellet.pos.x, pellet.pos.y, pellet.radius, {214, 154, 84, 235});
+            draw_disc_rgb(image, pellet.pos.x - 0.8F, pellet.pos.y - 0.9F, std::max(1.0F, pellet.radius * 0.48F), {255, 234, 182, 185});
         }
     }
 
@@ -1326,6 +1346,15 @@ public:
         for (auto& koi : fish) {
             koi.update(active_touches, lilypads, &pellets, now);
 
+            if (now - koi.last_pellet_eat_time < Koi::kPelletEatCooldownSeconds) {
+                if (should_replace_offscreen_koi(koi, now)) {
+                    updated.push_back(spawn_koi_from_offscreen());
+                } else {
+                    updated.push_back(koi);
+                }
+                continue;
+            }
+
             int eaten_idx = -1;
             float eaten_dist = std::numeric_limits<float>::max();
             for (std::size_t idx = 0; idx < pellets.size(); ++idx) {
@@ -1340,6 +1369,7 @@ public:
             if (eaten_idx >= 0) {
                 const auto pellet_pos = pellets[static_cast<std::size_t>(eaten_idx)].pos;
                 pellets.erase(pellets.begin() + eaten_idx);
+                koi.last_pellet_eat_time = now;
                 koi.scared = std::max(0.0F, koi.scared - 0.5F);
                 add_visual_ripple(pellet_pos.x, pellet_pos.y);
             }
@@ -1576,11 +1606,11 @@ public:
             koi.draw(img);
         }
         img = apply_ripple_distortion(img, rel_now);
-        draw_pellets(img);
         for (const auto& pad : lilypads) {
             pad.draw(img);
         }
         apply_lilypad_ripple_reflection(img, rel_now);
+        draw_pellets(img);
         return img;
     }
 };
@@ -1794,7 +1824,12 @@ int koi_pond_run(bool debug_touch) {
                 } else if (gesture == kGestureDoubleTap) {
                     pond.spawn_fish_from_gesture();
                 } else if (gesture == kGestureLongPress) {
-                    pond.feed_fish(static_cast<float>(g_gesture_x.load()), static_cast<float>(g_gesture_y.load()), now_seconds());
+                    const bool fed = pond.feed_fish(static_cast<float>(g_gesture_x.load()), static_cast<float>(g_gesture_y.load()), now_seconds());
+                    if (debug_touch) {
+                        std::cout << "[touch] feed request " << (fed ? "accepted" : "ignored (cooldown)")
+                                  << " at (" << g_gesture_x.load() << ',' << g_gesture_y.load() << ")"
+                                  << std::endl;
+                    }
                 }
             }
             pond.update(now_seconds());
