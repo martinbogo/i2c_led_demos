@@ -285,14 +285,6 @@ void alpha_blend_pixel(RGBImage& dst, int x, int y, const ColorRGBA& src) {
     dst.pixels[idx + 2] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(dst.pixels[idx + 2] * (1.0F - alpha) + src.b * alpha)), 0, 255));
 }
 
-void composite_rgba_over_rgb(RGBImage& dst, const RGBAImage& overlay) {
-    for (int y = 0; y < dst.height; ++y) {
-        for (int x = 0; x < dst.width; ++x) {
-            alpha_blend_pixel(dst, x, y, overlay.get(x, y));
-        }
-    }
-}
-
 void composite_rgba_over_rgb_at(RGBImage& dst, const RGBAImage& overlay, int ox, int oy) {
     for (int y = 0; y < overlay.height; ++y) {
         for (int x = 0; x < overlay.width; ++x) {
@@ -448,18 +440,24 @@ public:
         initialized_ = true;
     }
 
-    void draw_frame_rgb565(const std::vector<std::uint16_t>& frame) {
-        if (frame.size() != static_cast<std::size_t>(kLcdWidth * kLcdHeight)) {
+    void draw_frame_rgb565(const RGBImage& frame) {
+        if (frame.width != kLcdWidth || frame.height != kLcdHeight) {
             throw std::runtime_error("Unexpected frame size");
         }
         set_address_window(0, 0, kLcdWidth - 1, kLcdHeight - 1);
         write_command(0x2C);
-        std::vector<std::uint8_t> bytes(frame.size() * 2U);
-        for (std::size_t i = 0; i < frame.size(); ++i) {
-            bytes[i * 2U] = static_cast<std::uint8_t>((frame[i] >> 8U) & 0xFFU);
-            bytes[i * 2U + 1U] = static_cast<std::uint8_t>(frame[i] & 0xFFU);
+        const std::size_t pixel_count = static_cast<std::size_t>(frame.width * frame.height);
+        if (frame_bytes_.size() != pixel_count * 2U) {
+            frame_bytes_.resize(pixel_count * 2U);
         }
-        write_data(bytes.data(), bytes.size());
+        for (std::size_t pixel = 0, src = 0, dst = 0; pixel < pixel_count; ++pixel, src += 3U, dst += 2U) {
+            const std::uint16_t rgb565 = static_cast<std::uint16_t>(((frame.pixels[src] >> 3U) << 11U)
+                | ((frame.pixels[src + 1U] >> 2U) << 5U)
+                | (frame.pixels[src + 2U] >> 3U));
+            frame_bytes_[dst] = static_cast<std::uint8_t>((rgb565 >> 8U) & 0xFFU);
+            frame_bytes_[dst + 1U] = static_cast<std::uint8_t>(rgb565 & 0xFFU);
+        }
+        write_data(frame_bytes_.data(), frame_bytes_.size());
     }
 
     void cleanup() {
@@ -479,6 +477,7 @@ public:
 private:
     std::uint32_t spi_speed_hz_ = 0;
     bool initialized_ = false;
+    std::vector<std::uint8_t> frame_bytes_;
 
     void gpio_set(int pin, bool high) {
         hal_gpio_write(static_cast<std::uint32_t>(pin), high ? GPIO_HIGH : GPIO_LOW);
@@ -754,7 +753,28 @@ public:
         return marks;
     }
 
-    void draw_texture(RGBAImage& layer) const {
+    Bounds render_bounds() const {
+        float min_x = std::numeric_limits<float>::max();
+        float min_y = std::numeric_limits<float>::max();
+        float max_x = std::numeric_limits<float>::lowest();
+        float max_y = std::numeric_limits<float>::lowest();
+        for (std::size_t i = 0; i < segments.size(); ++i) {
+            const auto& seg = segments[i];
+            const float radius = radii[i];
+            min_x = std::min(min_x, seg.x - radius);
+            min_y = std::min(min_y, seg.y - radius);
+            max_x = std::max(max_x, seg.x + radius);
+            max_y = std::max(max_y, seg.y + radius);
+        }
+        const float margin = 24.0F;
+        const int x0 = static_cast<int>(std::floor(min_x - margin));
+        const int y0 = static_cast<int>(std::floor(min_y - margin));
+        const int x1 = static_cast<int>(std::ceil(max_x + margin));
+        const int y1 = static_cast<int>(std::ceil(max_y + margin));
+        return {x0, y0, std::max(1, x1 - x0 + 1), std::max(1, y1 - y0 + 1)};
+    }
+
+    void draw_texture(RGBAImage& layer, const Vec2& origin) const {
         if (segments.size() < 2) {
             return;
         }
@@ -778,8 +798,8 @@ public:
             const float normal_x = -tangent_y;
             const float normal_y = tangent_x;
             const float body_r = radii[static_cast<std::size_t>(seg_idx)];
-            const float center_x = seg.x + tangent_x * body_r * mark.along + normal_x * body_r * mark.lateral * mark.side;
-            const float center_y = seg.y + tangent_y * body_r * mark.along + normal_y * body_r * mark.lateral * mark.side;
+            const float center_x = seg.x + origin.x + tangent_x * body_r * mark.along + normal_x * body_r * mark.lateral * mark.side;
+            const float center_y = seg.y + origin.y + tangent_y * body_r * mark.along + normal_y * body_r * mark.lateral * mark.side;
             const float rx = std::max(1.2F, body_r * mark.radius_scale * mark.stretch);
             const float ry = std::max(1.0F, body_r * mark.radius_scale);
             draw_filled_ellipse(layer, center_x - rx, center_y - ry, center_x + rx, center_y + ry, {mark.color.r, mark.color.g, mark.color.b, mark.alpha});
@@ -960,13 +980,17 @@ public:
     }
 
     void draw(RGBImage& img_bg) const {
-        RGBAImage shadow(img_bg.width, img_bg.height);
-        draw_shape(shadow, {10, 28, 22, 68}, {4.0F, 5.0F}, 1.08F, 0.96F, 0.88F, false, {0, 0, 0, 0});
-        composite_rgba_over_rgb(img_bg, shadow);
-        RGBAImage body(img_bg.width, img_bg.height);
-        draw_shape(body, to_rgba(color), {0.0F, 0.0F}, 1.0F, 1.0F, 1.0F, true, {0, 0, 0, 255});
-        draw_texture(body);
-        composite_rgba_over_rgb(img_bg, body);
+        const auto bounds = render_bounds();
+        const Vec2 origin{-static_cast<float>(bounds.x), -static_cast<float>(bounds.y)};
+
+        RGBAImage shadow(bounds.w, bounds.h);
+        draw_shape(shadow, {10, 28, 22, 68}, {origin.x + 4.0F, origin.y + 5.0F}, 1.08F, 0.96F, 0.88F, false, {0, 0, 0, 0});
+        composite_rgba_over_rgb_at(img_bg, shadow, bounds.x, bounds.y);
+
+        RGBAImage body(bounds.w, bounds.h);
+        draw_shape(body, to_rgba(color), origin, 1.0F, 1.0F, 1.0F, true, {0, 0, 0, 255});
+        draw_texture(body, origin);
+        composite_rgba_over_rgb_at(img_bg, body, bounds.x, bounds.y);
     }
 };
 
@@ -1083,8 +1107,7 @@ public:
         }), touch_points.end());
     }
 
-    RGBImage apply_floor_shimmer(const RGBImage& input, double now) const {
-        RGBImage out = input;
+    void apply_floor_shimmer(RGBImage& image, double now) const {
         for (int y = 0; y < kLcdHeight; ++y) {
             for (int x = 0; x < kLcdWidth; ++x) {
                 const auto idx = static_cast<std::size_t>(y * kLcdWidth + x);
@@ -1107,15 +1130,14 @@ public:
                     std::sin((xs * 0.031F) - (ys * 0.043F) + static_cast<float>(now) * 1.8F) +
                     std::sin((xs * 0.018F) + (ys * 0.026F) - static_cast<float>(now) * 1.15F) - 0.1F);
                 sun_glow = std::pow(sun_glow, 1.65F) * (0.3F + radial_mask * 0.7F) * (0.45F + depth_mask * 0.55F) * 16.0F;
-                const auto base = input.get(x, y);
-                out.set(x, y, clamp_color({
+                const auto base = image.get(x, y);
+                image.set(x, y, clamp_color({
                     static_cast<int>(std::lround(base.r + caustic * 0.44F + sun_glow * 0.32F)),
                     static_cast<int>(std::lround(base.g + caustic * 0.92F + sun_glow * 0.58F)),
                     static_cast<int>(std::lround(base.b + caustic * 0.66F + sun_glow * 0.40F)),
                 }));
             }
         }
-        return out;
     }
 
     RGBImage apply_ripple_distortion(const RGBImage& input, double now) const {
@@ -1157,11 +1179,10 @@ public:
         return out;
     }
 
-    RGBImage apply_lilypad_ripple_reflection(const RGBImage& input, double now) const {
+    void apply_lilypad_ripple_reflection(RGBImage& image, double now) const {
         if (ripples.empty()) {
-            return input;
+            return;
         }
-        RGBImage out = input;
         for (const auto& pad : lilypads) {
             const auto b = pad.bounds();
             if (b.x >= kLcdWidth || b.y >= kLcdHeight || b.x + b.w <= 0 || b.y + b.h <= 0) {
@@ -1205,16 +1226,15 @@ public:
                 }
             }
             if (any) {
-                composite_rgba_over_rgb_at(out, overlay, b.x, b.y);
+                composite_rgba_over_rgb_at(image, overlay, b.x, b.y);
             }
         }
-        return out;
     }
 
     RGBImage render() const {
         const double rel_now = now_seconds() - start_time;
         RGBImage img = g_assets->bg;
-        img = apply_floor_shimmer(img, rel_now);
+        apply_floor_shimmer(img, rel_now);
         for (const auto& koi : fish) {
             koi.draw(img);
         }
@@ -1222,7 +1242,7 @@ public:
         for (const auto& pad : lilypads) {
             pad.draw(img);
         }
-        img = apply_lilypad_ripple_reflection(img, rel_now);
+        apply_lilypad_ripple_reflection(img, rel_now);
         return img;
     }
 };
@@ -1269,20 +1289,6 @@ void touch_thread_func() {
     }
 }
 
-std::vector<std::uint16_t> rgb_to_rgb565(const RGBImage& image) {
-    std::vector<std::uint16_t> out(static_cast<std::size_t>(image.width * image.height));
-    for (int y = 0; y < image.height; ++y) {
-        for (int x = 0; x < image.width; ++x) {
-            const auto color = image.get(x, y);
-            const std::uint16_t r = static_cast<std::uint16_t>((color.r >> 3U) << 11U);
-            const std::uint16_t g = static_cast<std::uint16_t>((color.g >> 2U) << 5U);
-            const std::uint16_t b = static_cast<std::uint16_t>(color.b >> 3U);
-            out[static_cast<std::size_t>(y * image.width + x)] = static_cast<std::uint16_t>(r | g | b);
-        }
-    }
-    return out;
-}
-
 }  // namespace
 
 int koi_pond_run() {
@@ -1312,7 +1318,7 @@ int koi_pond_run() {
             last_touch = is_touched;
             pond.update(now_seconds());
             const auto image = pond.render();
-            driver.draw_frame_rgb565(rgb_to_rgb565(image));
+            driver.draw_frame_rgb565(image);
             const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - frame_start).count();
             if (elapsed < 0.033) {
                 std::this_thread::sleep_for(std::chrono::duration<double>(0.033 - elapsed));

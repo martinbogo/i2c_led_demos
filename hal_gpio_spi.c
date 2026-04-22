@@ -49,6 +49,23 @@ static int spi_fd = -1;
 static int i2c_fd = -1;
 static uint32_t spi_speed_hz_configured = 0;
 
+static int open_spi_device_with_fallback(const char *device) {
+    spi_fd = open(device, O_RDWR);
+    if (spi_fd >= 0) {
+        return 0;
+    }
+
+    if (strcmp(device, SPI_DEVICE) == 0 && strcmp(SPI_DEVICE, SPI_FALLBACK_DEVICE) != 0) {
+        fprintf(stderr, "Failed to open %s, retrying with fallback %s\n", device, SPI_FALLBACK_DEVICE);
+        spi_fd = open(SPI_FALLBACK_DEVICE, O_RDWR);
+        if (spi_fd >= 0) {
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
 enum {
     SPI_TRANSFER_CHUNK_SIZE = 4096
 };
@@ -288,8 +305,7 @@ int hal_gpio_set_pwm(uint32_t pin, uint32_t frequency, uint32_t duty_cycle) {
  * ============================================================================ */
 
 int hal_spi_init(const char *device, uint32_t speed_hz, uint8_t mode) {
-    spi_fd = open(device, O_RDWR);
-    if (spi_fd < 0) {
+    if (open_spi_device_with_fallback(device) < 0) {
         perror("Failed to open SPI device");
         return -1;
     }

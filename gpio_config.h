@@ -28,7 +28,8 @@
 #define TOUCH_I2C_BUS    "/dev/i2c-1"
 
 /* SPI Configuration */
-#define SPI_DEVICE       "/dev/spidev10.0"  /* SPI device on Raspberry Pi */
+#define SPI_DEVICE       "/dev/spidev0.0"   /* Match Python reference: try primary SPI first */
+#define SPI_FALLBACK_DEVICE "/dev/spidev10.0" /* Pi 5 fallback used by Python driver */
 #define SPI_SPEED_HZ     10000000           /* 10 MHz */
 #define SPI_MODE         0                  /* CPOL=0, CPHA=0 */
 #define SPI_BITS_PER_WORD 8
