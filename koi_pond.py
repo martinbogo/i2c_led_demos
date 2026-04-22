@@ -3689,11 +3689,6 @@ GESTURE_SINGLE_TAP = 0x05
 GESTURE_DOUBLE_TAP = 0x0B
 GESTURE_LONG_PRESS = 0x0C
 
-DOUBLE_TAP_MAX_GAP = 0.35
-DOUBLE_TAP_MAX_DIST = 24.0
-LONG_PRESS_MIN_HOLD = 0.70
-LONG_PRESS_MAX_DRIFT = 18.0
-
 touch_x, touch_y, is_touched = -1, -1, False
 gesture_x, gesture_y, gesture_code, gesture_seq = -1, -1, 0, 0
 
@@ -3730,16 +3725,6 @@ def touch_thread(driver):
 
         last_double_tap_emit = 0.0
         last_long_press_emit = 0.0
-        press_active = False
-        press_start_time = 0.0
-        press_start_x = -1
-        press_start_y = -1
-        last_contact_x = -1
-        last_contact_y = -1
-        long_press_emitted = False
-        last_tap_time = -10.0
-        last_tap_x = -1
-        last_tap_y = -1
         last_hw_gesture_signature = None
 
         while True:
@@ -3747,78 +3732,32 @@ def touch_thread(driver):
                 data = bus.read_i2c_block_data(0x15, 0x01, 6)
                 gesture = data[0]
                 now = time.monotonic()
-                if gesture not in (GESTURE_DOUBLE_TAP, GESTURE_LONG_PRESS):
+                if gesture not in (GESTURE_SINGLE_TAP, GESTURE_DOUBLE_TAP, GESTURE_LONG_PRESS):
                     last_hw_gesture_signature = None
-                if not press_active and last_tap_time > 0.0 and now - last_tap_time > DOUBLE_TAP_MAX_GAP:
-                    if now - last_double_tap_emit > 0.05:
-                        gesture_x, gesture_y, gesture_code = last_tap_x, last_tap_y, GESTURE_SINGLE_TAP
-                        gesture_seq += 1
-                    last_tap_time = -10.0
-                    last_tap_x, last_tap_y = -1, -1
-
-                if data[1] > 0 or gesture in (GESTURE_DOUBLE_TAP, GESTURE_LONG_PRESS):
+                if data[1] > 0 or gesture in (GESTURE_SINGLE_TAP, GESTURE_DOUBLE_TAP, GESTURE_LONG_PRESS):
                     x = ((data[2] & 0x0F) << 8) | data[3]
                     y = ((data[4] & 0x0F) << 8) | data[5]
                     x = (LCD_WIDTH - 1) - x
                     touch_x, touch_y, is_touched = x, y, True
-                    last_contact_x, last_contact_y = x, y
                     hw_signature = (gesture, x, y)
 
-                    if gesture == GESTURE_DOUBLE_TAP and hw_signature != last_hw_gesture_signature and now - last_double_tap_emit > 0.35:
+                    if gesture == GESTURE_SINGLE_TAP and hw_signature != last_hw_gesture_signature:
+                        gesture_x, gesture_y, gesture_code = x, y, gesture
+                        gesture_seq += 1
+                        last_hw_gesture_signature = hw_signature
+                    elif gesture == GESTURE_DOUBLE_TAP and hw_signature != last_hw_gesture_signature and now - last_double_tap_emit > 0.35:
                         gesture_x, gesture_y, gesture_code = x, y, gesture
                         gesture_seq += 1
                         last_double_tap_emit = now
-                        last_tap_time = -10.0
-                        last_tap_x, last_tap_y = -1, -1
                         last_hw_gesture_signature = hw_signature
                     elif gesture == GESTURE_LONG_PRESS and hw_signature != last_hw_gesture_signature and now - last_long_press_emit > 1.10:
                         gesture_x, gesture_y, gesture_code = x, y, gesture
                         gesture_seq += 1
                         last_long_press_emit = now
-                        last_tap_time = -10.0
-                        last_tap_x, last_tap_y = -1, -1
                         last_hw_gesture_signature = hw_signature
-
-                    if data[1] > 0:
-                        if not press_active:
-                            press_active = True
-                            press_start_time = now
-                            press_start_x, press_start_y = x, y
-                            long_press_emitted = False
-                        elif not long_press_emitted:
-                            drift = math.hypot(x - press_start_x, y - press_start_y)
-                            if drift <= LONG_PRESS_MAX_DRIFT and now - press_start_time >= LONG_PRESS_MIN_HOLD:
-                                if now - last_long_press_emit > 1.10:
-                                    gesture_x, gesture_y, gesture_code = x, y, GESTURE_LONG_PRESS
-                                    gesture_seq += 1
-                                    last_long_press_emit = now
-                                    last_tap_time = -10.0
-                                    last_tap_x, last_tap_y = -1, -1
-                                long_press_emitted = True
                 else:
-                    if press_active:
-                        release_x = last_contact_x if last_contact_x >= 0 else press_start_x
-                        release_y = last_contact_y if last_contact_y >= 0 else press_start_y
-                        tap_duration = now - press_start_time
-                        tap_drift = math.hypot(release_x - press_start_x, release_y - press_start_y)
-                        if not long_press_emitted and tap_duration <= LONG_PRESS_MIN_HOLD and tap_drift <= LONG_PRESS_MAX_DRIFT:
-                            double_tap_drift = math.hypot(release_x - last_tap_x, release_y - last_tap_y)
-                            if now - last_tap_time <= DOUBLE_TAP_MAX_GAP and double_tap_drift <= DOUBLE_TAP_MAX_DIST:
-                                if now - last_double_tap_emit > 0.20:
-                                    gesture_x, gesture_y, gesture_code = release_x, release_y, GESTURE_DOUBLE_TAP
-                                    gesture_seq += 1
-                                    last_double_tap_emit = now
-                                last_tap_time = -10.0
-                                last_tap_x, last_tap_y = -1, -1
-                            else:
-                                last_tap_time = now
-                                last_tap_x, last_tap_y = release_x, release_y
-                        press_active = False
-                        long_press_emitted = False
                     is_touched = False
             except Exception:
-                press_active = False
-                long_press_emitted = False
                 is_touched = False
             time.sleep(0.02)
     except Exception as e:

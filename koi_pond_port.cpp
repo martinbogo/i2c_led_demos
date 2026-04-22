@@ -45,10 +45,6 @@ constexpr std::uint32_t kSpiSpeedHz = SPI_SPEED_HZ;
 constexpr std::uint8_t kGestureSingleTap = 0x05;
 constexpr std::uint8_t kGestureDoubleTap = 0x0B;
 constexpr std::uint8_t kGestureLongPress = 0x0C;
-constexpr double kDoubleTapMaxGapSeconds = 0.35;
-constexpr float kDoubleTapMaxDistance = 24.0F;
-constexpr double kLongPressMinHoldSeconds = 0.70;
-constexpr float kLongPressMaxDrift = 18.0F;
 
 struct Vec2 {
     float x = 0.0F;
@@ -1624,16 +1620,6 @@ void touch_thread_func() {
         hal_i2c_write_byte(kTouchAddr, 0xEE, 0x01);
         hal_i2c_write_byte(kTouchAddr, 0xED, 0x0F);
 
-        bool press_active = false;
-        bool long_press_emitted = false;
-        double press_start_time = 0.0;
-        int press_start_x = -1;
-        int press_start_y = -1;
-        int last_contact_x = -1;
-        int last_contact_y = -1;
-        double last_tap_time = -10.0;
-        int last_tap_x = -1;
-        int last_tap_y = -1;
         double last_double_tap_emit = -10.0;
         double last_long_press_emit = -10.0;
         int last_hw_gesture = -1;
@@ -1648,37 +1634,31 @@ void touch_thread_func() {
                 const int y = ((data[4] & 0x0F) << 8) | data[5];
                 const int mapped_x = (kLcdWidth - 1) - x;
                 const double now = now_seconds();
-                if (gesture != kGestureDoubleTap && gesture != kGestureLongPress) {
+                if (gesture != kGestureSingleTap && gesture != kGestureDoubleTap && gesture != kGestureLongPress) {
                     last_hw_gesture = -1;
                     last_hw_gesture_x = -1;
                     last_hw_gesture_y = -1;
                 }
-                if (!press_active && last_tap_time > 0.0 && now - last_tap_time > kDoubleTapMaxGapSeconds) {
-                    g_gesture_x.store(last_tap_x);
-                    g_gesture_y.store(last_tap_y);
-                    g_gesture_code.store(kGestureSingleTap);
-                    g_gesture_sequence.fetch_add(1);
-                    last_tap_time = -10.0;
-                    last_tap_x = -1;
-                    last_tap_y = -1;
-                }
-                if (data[1] > 0 || gesture == kGestureDoubleTap || gesture == kGestureLongPress) {
+                if (data[1] > 0 || gesture == kGestureSingleTap || gesture == kGestureDoubleTap || gesture == kGestureLongPress) {
                     g_touch_x.store(mapped_x);
                     g_touch_y.store(y);
                     g_is_touched.store(data[1] > 0);
-                    last_contact_x = mapped_x;
-                    last_contact_y = y;
                     const bool new_hw_signature = gesture != last_hw_gesture || mapped_x != last_hw_gesture_x || y != last_hw_gesture_y;
 
-                    if (gesture == kGestureDoubleTap && new_hw_signature && now - last_double_tap_emit > 0.35) {
+                    if (gesture == kGestureSingleTap && new_hw_signature) {
+                        g_gesture_x.store(mapped_x);
+                        g_gesture_y.store(y);
+                        g_gesture_code.store(gesture);
+                        g_gesture_sequence.fetch_add(1);
+                        last_hw_gesture = gesture;
+                        last_hw_gesture_x = mapped_x;
+                        last_hw_gesture_y = y;
+                    } else if (gesture == kGestureDoubleTap && new_hw_signature && now - last_double_tap_emit > 0.35) {
                         g_gesture_x.store(mapped_x);
                         g_gesture_y.store(y);
                         g_gesture_code.store(gesture);
                         g_gesture_sequence.fetch_add(1);
                         last_double_tap_emit = now;
-                        last_tap_time = -10.0;
-                        last_tap_x = -1;
-                        last_tap_y = -1;
                         last_hw_gesture = gesture;
                         last_hw_gesture_x = mapped_x;
                         last_hw_gesture_y = y;
@@ -1688,72 +1668,11 @@ void touch_thread_func() {
                         g_gesture_code.store(gesture);
                         g_gesture_sequence.fetch_add(1);
                         last_long_press_emit = now;
-                        last_tap_time = -10.0;
-                        last_tap_x = -1;
-                        last_tap_y = -1;
                         last_hw_gesture = gesture;
                         last_hw_gesture_x = mapped_x;
                         last_hw_gesture_y = y;
                     }
-
-                    if (data[1] > 0) {
-                        if (!press_active) {
-                            press_active = true;
-                            long_press_emitted = false;
-                            press_start_time = now;
-                            press_start_x = mapped_x;
-                            press_start_y = y;
-                        } else if (!long_press_emitted) {
-                            const float dx = static_cast<float>(mapped_x - press_start_x);
-                            const float dy = static_cast<float>(y - press_start_y);
-                            const float drift = std::sqrt(dx * dx + dy * dy);
-                            if (drift <= kLongPressMaxDrift && now - press_start_time >= kLongPressMinHoldSeconds) {
-                                if (now - last_long_press_emit > 1.10) {
-                                    g_gesture_x.store(mapped_x);
-                                    g_gesture_y.store(y);
-                                    g_gesture_code.store(kGestureLongPress);
-                                    g_gesture_sequence.fetch_add(1);
-                                    last_long_press_emit = now;
-                                    last_tap_time = -10.0;
-                                    last_tap_x = -1;
-                                    last_tap_y = -1;
-                                }
-                                long_press_emitted = true;
-                            }
-                        }
-                    }
                 } else {
-                    if (press_active) {
-                        const int release_x = last_contact_x >= 0 ? last_contact_x : press_start_x;
-                        const int release_y = last_contact_y >= 0 ? last_contact_y : press_start_y;
-                        const double tap_duration = now - press_start_time;
-                        const float tap_dx = static_cast<float>(release_x - press_start_x);
-                        const float tap_dy = static_cast<float>(release_y - press_start_y);
-                        const float tap_drift = std::sqrt(tap_dx * tap_dx + tap_dy * tap_dy);
-                        if (!long_press_emitted && tap_duration <= kLongPressMinHoldSeconds && tap_drift <= kLongPressMaxDrift) {
-                            const float double_dx = static_cast<float>(release_x - last_tap_x);
-                            const float double_dy = static_cast<float>(release_y - last_tap_y);
-                            const float double_dist = std::sqrt(double_dx * double_dx + double_dy * double_dy);
-                            if (now - last_tap_time <= kDoubleTapMaxGapSeconds && double_dist <= kDoubleTapMaxDistance) {
-                                if (now - last_double_tap_emit > 0.20) {
-                                    g_gesture_x.store(release_x);
-                                    g_gesture_y.store(release_y);
-                                    g_gesture_code.store(kGestureDoubleTap);
-                                    g_gesture_sequence.fetch_add(1);
-                                    last_double_tap_emit = now;
-                                }
-                                last_tap_time = -10.0;
-                                last_tap_x = -1;
-                                last_tap_y = -1;
-                            } else {
-                                last_tap_time = now;
-                                last_tap_x = release_x;
-                                last_tap_y = release_y;
-                            }
-                        }
-                        press_active = false;
-                        long_press_emitted = false;
-                    }
                     g_is_touched.store(false);
                 }
             }
@@ -1761,7 +1680,6 @@ void touch_thread_func() {
         }
         hal_i2c_close();
     } catch (...) {
-        g_is_touched.store(false);
         g_is_touched.store(false);
     }
 }
