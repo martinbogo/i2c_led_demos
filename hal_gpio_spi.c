@@ -74,7 +74,6 @@ enum {
 static struct gpiod_chip *gpio_chip = NULL;
 static struct gpiod_line_request *gpio_requests[64] = {0};
 static gpio_mode_t gpio_modes[64] = {0};
-#endif
 
 static int validate_gpio_pin(uint32_t pin) {
     return pin < 64U ? 0 : -1;
@@ -83,6 +82,8 @@ static int validate_gpio_pin(uint32_t pin) {
 static int gpio_is_hw_spi_cs(uint32_t pin) {
     return pin == LCD_CS_GPIO;
 }
+
+#endif
 
 #ifdef __linux__
 static int ensure_gpio_chip(void) {

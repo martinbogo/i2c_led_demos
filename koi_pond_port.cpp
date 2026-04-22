@@ -35,7 +35,6 @@ namespace {
 
 constexpr int kLcdWidth = LCD_WIDTH;
 constexpr int kLcdHeight = LCD_HEIGHT;
-constexpr float kPi = static_cast<float>(M_PI);
 constexpr float kTwoPi = static_cast<float>(M_PI * 2.0);
 constexpr std::size_t kSinLutSize = 4096;
 constexpr const char* kTouchI2CPrimary = "/dev/i2c-3";
@@ -453,14 +452,6 @@ ColorRGBA to_rgba(const ColorRGB& color, std::uint8_t alpha = 255) {
     return {color.r, color.g, color.b, alpha};
 }
 
-ColorRGB clamp_color(const std::array<int, 3>& color) {
-    return {
-        static_cast<std::uint8_t>(clamp_int(color[0], 0, 255)),
-        static_cast<std::uint8_t>(clamp_int(color[1], 0, 255)),
-        static_cast<std::uint8_t>(clamp_int(color[2], 0, 255)),
-    };
-}
-
 class WaveshareDisplayDriver {
 public:
     explicit WaveshareDisplayDriver(std::uint32_t spi_speed_hz)
@@ -800,20 +791,19 @@ public:
     float panic_speed_multiplier() const { return scale_from_trait(0.82F, 1.00F, 1.18F); }
     float panic_turn_response() const { return scale_from_trait(0.14F, 0.20F, 0.28F); }
 
-    std::pair<float, float> free_swim_boundary_acceleration(float force_scale = 0.06F, float slack = 36.0F) const {
-        float ax = 0.0F;
-        float ay = 0.0F;
+    Vec2 free_swim_boundary_acceleration(float force_scale = 0.06F, float slack = 36.0F) const {
+        Vec2 accel{};
         if (pos.x < -slack) {
-            ax += (-slack - pos.x) * force_scale;
+            accel.x += (-slack - pos.x) * force_scale;
         } else if (pos.x > kLcdWidth + slack) {
-            ax -= (pos.x - (kLcdWidth + slack)) * force_scale;
+            accel.x -= (pos.x - (kLcdWidth + slack)) * force_scale;
         }
         if (pos.y < -slack) {
-            ay += (-slack - pos.y) * force_scale;
+            accel.y += (-slack - pos.y) * force_scale;
         } else if (pos.y > kLcdHeight + slack) {
-            ay -= (pos.y - (kLcdHeight + slack)) * force_scale;
+            accel.y -= (pos.y - (kLcdHeight + slack)) * force_scale;
         }
-        return {ax, ay};
+        return accel;
     }
 
     std::vector<TextureMark> generate_texture_marks() {
@@ -924,9 +914,9 @@ public:
             const float wander_angle = random_uniform(-cruise_turn_span(), cruise_turn_span());
             const float current_angle = std::atan2(vel.y, vel.x);
             const float new_angle = current_angle + wander_angle;
-            const auto [bound_ax, bound_ay] = free_swim_boundary_acceleration(0.065F, 38.0F);
-            ax += bound_ax;
-            ay += bound_ay;
+            const Vec2 boundary_accel = free_swim_boundary_acceleration(0.065F, 38.0F);
+            ax += boundary_accel.x;
+            ay += boundary_accel.y;
             vel = {std::cos(new_angle) * speed + ax, std::sin(new_angle) * speed + ay};
         } else if (hiding_state == HidingState::Hiding) {
             speed = (3.0F + (scared / 9.0F) * 5.0F) * panic_speed_multiplier();
@@ -973,9 +963,9 @@ public:
             const float dx = cx - pos.x;
             const float dy = cy - pos.y;
             const float dist_center = std::sqrt(dx * dx + dy * dy);
-            const auto [bound_ax, bound_ay] = free_swim_boundary_acceleration(0.11F, 28.0F);
-            ax += bound_ax + dx * 0.01F;
-            ay += bound_ay + dy * 0.01F;
+            const Vec2 boundary_accel = free_swim_boundary_acceleration(0.11F, 28.0F);
+            ax += boundary_accel.x + dx * 0.01F;
+            ay += boundary_accel.y + dy * 0.01F;
             if (pos.x >= 0.0F && pos.x <= kLcdWidth && pos.y >= 0.0F && pos.y <= kLcdHeight && dist_center < kLcdWidth / 2.0F - 50.0F) {
                 hiding_state = HidingState::Normal;
             }
