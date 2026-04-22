@@ -2870,6 +2870,7 @@ class Koi:
         self.hide_timer = 0
         self.hide_target = None
         self.scared = random.uniform(0, 9.0)
+        self.offscreen_replacement_checked = False
         self.vel = [random.uniform(-1, 1), random.uniform(-1, 1)]
         self.normalize(self.vel)
         self.vel[0] *= 2.0
@@ -2881,6 +2882,7 @@ class Koi:
         # True comma shape, fading from head to tail tip
         self.radii = [7.0, 8.0, 7.5, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.5]
         self.color = random.choice([(255, 90, 40), (220, 220, 220), (255, 170, 50), (240, 100, 40)])
+        self.texture_marks = self._generate_texture_marks()
         
         self.segments = [[x, y] for _ in range(self.num_chunks)]
 
@@ -2890,6 +2892,86 @@ class Koi:
             v[0] /= mag
             v[1] /= mag
         return mag
+
+    def _clamp_color(self, color):
+        return tuple(max(0, min(255, int(c))) for c in color)
+
+    def _generate_texture_marks(self):
+        base_r, base_g, base_b = self.color
+
+        if max(self.color) - min(self.color) < 40:
+            primary = self._clamp_color((245, 125, 70))
+            secondary = self._clamp_color((55, 45, 40))
+        elif base_r > 240 and base_g > 150:
+            primary = self._clamp_color((245, 225, 210))
+            secondary = self._clamp_color((215, 110, 55))
+        else:
+            primary = self._clamp_color((base_r + 22, base_g + 18, base_b + 14))
+            secondary = self._clamp_color((base_r - 34, base_g - 24, base_b - 20))
+
+        marks = []
+        mark_count = random.randint(3, 5)
+        for idx in range(mark_count):
+            seg_index = random.randint(0, max(1, self.num_chunks - 3))
+            side = random.choice([-1.0, 1.0])
+            along = random.uniform(-0.35, 0.55)
+            lateral = random.uniform(0.05, 0.55)
+            radius_scale = random.uniform(0.35, 0.78) * (1.0 - seg_index / (self.num_chunks + 1))
+            stretch = random.uniform(0.9, 1.8)
+            tint = primary if idx % 2 == 0 else secondary
+            alpha = random.randint(150, 225) if idx % 2 == 0 else random.randint(95, 165)
+            marks.append(
+                {
+                    "segment": seg_index,
+                    "side": side,
+                    "along": along,
+                    "lateral": lateral,
+                    "radius_scale": max(0.16, radius_scale),
+                    "stretch": stretch,
+                    "color": tint,
+                    "alpha": alpha,
+                }
+            )
+
+        return marks
+
+    def _draw_texture(self, draw):
+        if len(self.segments) < 2:
+            return
+
+        for mark in self.texture_marks:
+            seg_idx = min(mark["segment"], self.num_chunks - 2)
+            seg = self.segments[seg_idx]
+            next_seg = self.segments[seg_idx + 1]
+            dx = next_seg[0] - seg[0]
+            dy = next_seg[1] - seg[1]
+            mag = math.hypot(dx, dy)
+            if mag < 0.001:
+                angle = math.atan2(self.vel[1], self.vel[0])
+                tangent_x = math.cos(angle)
+                tangent_y = math.sin(angle)
+            else:
+                tangent_x = dx / mag
+                tangent_y = dy / mag
+
+            normal_x = -tangent_y
+            normal_y = tangent_x
+            body_r = self.radii[seg_idx]
+            center_x = (
+                seg[0]
+                + tangent_x * body_r * mark["along"]
+                + normal_x * body_r * mark["lateral"] * mark["side"]
+            )
+            center_y = (
+                seg[1]
+                + tangent_y * body_r * mark["along"]
+                + normal_y * body_r * mark["lateral"] * mark["side"]
+            )
+
+            rx = max(1.2, body_r * mark["radius_scale"] * mark["stretch"])
+            ry = max(1.0, body_r * mark["radius_scale"])
+            color = (*mark["color"], mark["alpha"])
+            draw.ellipse((center_x - rx, center_y - ry, center_x + rx, center_y + ry), fill=color)
 
     def update(self, target=None, flee_points=None, lilypads=None):
         if not hasattr(self, 'hiding_state'):
@@ -3135,8 +3217,12 @@ class Koi:
         composited = Image.alpha_composite(img_bg.convert("RGBA"), shadow_layer)
         img_bg.paste(composited.convert("RGB"))
 
-        draw = ImageDraw.Draw(img_bg)
+        body_layer = Image.new("RGBA", img_bg.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(body_layer, "RGBA")
         self._draw_shape(draw, self.color)
+        self._draw_texture(draw)
+        composited = Image.alpha_composite(img_bg.convert("RGBA"), body_layer)
+        img_bg.paste(composited.convert("RGB"))
 
 class Pond:
     def __init__(self):
@@ -3151,6 +3237,56 @@ class Pond:
         self.ripples = [] 
         self.touch_points = []
         self.start_time = time.time()
+
+    def _spawn_koi_from_offscreen(self):
+        margin = random.uniform(24.0, 42.0)
+        edge = random.choice(("left", "right", "top", "bottom"))
+
+        if edge == "left":
+            x = -margin
+            y = random.uniform(15.0, LCD_HEIGHT - 15.0)
+        elif edge == "right":
+            x = LCD_WIDTH + margin
+            y = random.uniform(15.0, LCD_HEIGHT - 15.0)
+        elif edge == "top":
+            x = random.uniform(15.0, LCD_WIDTH - 15.0)
+            y = -margin
+        else:
+            x = random.uniform(15.0, LCD_WIDTH - 15.0)
+            y = LCD_HEIGHT + margin
+
+        koi = Koi(x, y)
+        target_x = LCD_WIDTH * 0.5 + random.uniform(-40.0, 40.0)
+        target_y = LCD_HEIGHT * 0.5 + random.uniform(-40.0, 40.0)
+        dx = target_x - x
+        dy = target_y - y
+        dist = math.hypot(dx, dy)
+        if dist > 0.001:
+            koi.vel = [(dx / dist) * 2.1, (dy / dist) * 2.1]
+        koi.pos = [x, y]
+        koi.segments = [[x, y] for _ in range(koi.num_chunks)]
+        return koi
+
+    def _should_replace_offscreen_koi(self, koi):
+        if koi.scared <= 7.0:
+            return False
+
+        margin = 18.0
+        outside = (
+            koi.pos[0] < -margin
+            or koi.pos[0] > LCD_WIDTH + margin
+            or koi.pos[1] < -margin
+            or koi.pos[1] > LCD_HEIGHT + margin
+        )
+        if not outside:
+            koi.offscreen_replacement_checked = False
+            return False
+
+        if koi.offscreen_replacement_checked:
+            return False
+
+        koi.offscreen_replacement_checked = True
+        return random.random() < 0.5
 
     def _apply_floor_shimmer(self, img, now):
         img_arr = np.array(img, dtype=np.float32)
@@ -3286,9 +3422,15 @@ class Pond:
 
     def update(self):
         active_touches = [t["pos"] for t in self.touch_points]
-        
+
+        updated_fish = []
         for f in self.fish:
             f.update(flee_points=active_touches, lilypads=self.lilypads)
+            if self._should_replace_offscreen_koi(f):
+                updated_fish.append(self._spawn_koi_from_offscreen())
+            else:
+                updated_fish.append(f)
+        self.fish = updated_fish
             
         for r in self.ripples:
             r[2] += 2.0 
