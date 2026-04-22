@@ -27,7 +27,7 @@ constexpr int kLcdHeight = LCD_HEIGHT;
 constexpr const char* kTouchI2CPrimary = "/dev/i2c-3";
 constexpr const char* kTouchI2CFallback = TOUCH_I2C_BUS;
 constexpr std::uint8_t kTouchAddr = 0x15;
-constexpr std::uint32_t kSpiSpeedHz = 80000000U;
+constexpr std::uint32_t kSpiSpeedHz = SPI_SPEED_HZ;
 
 struct Vec2 {
     float x = 0.0F;
