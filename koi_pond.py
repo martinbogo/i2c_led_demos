@@ -2867,6 +2867,14 @@ class Lilypad:
 
 class Koi:
     PELLET_EAT_COOLDOWN_SECONDS = 1.0
+    SIZE_SCALE_BY_PARAMETER = {
+        0: 0.58,
+        1: 0.72,
+        2: 0.88,
+        3: 1.00,
+        4: 1.18,
+        5: 1.38,
+    }
 
     @staticmethod
     def _sample_swim_speed_trait():
@@ -2876,6 +2884,14 @@ class Koi:
                 return trait
         return max(0.0, min(9.0, trait))
 
+    @staticmethod
+    def _sample_size_parameter():
+        for _ in range(16):
+            size = int(round(random.gauss(3.0, 1.0)))
+            if 0 <= size <= 5:
+                return size
+        return max(0, min(5, size))
+
     def __init__(self, x, y):
         self.pos = [x, y]
         self.hiding_state = "normal"
@@ -2883,6 +2899,8 @@ class Koi:
         self.hide_target = None
         self.scared = random.uniform(0, 9.0)
         self.swim_speed_trait = self._sample_swim_speed_trait()
+        self.size_parameter = self._sample_size_parameter()
+        self.size_scale = self.SIZE_SCALE_BY_PARAMETER[self.size_parameter]
         self.last_pellet_eat_time = -1e9
         self.offscreen_replacement_checked = False
         self.offscreen_since = None
@@ -2892,10 +2910,11 @@ class Koi:
         self.vel[1] *= 2.0
         
         self.num_chunks = 10
-        self.segment_dist = 3.5
+        self.segment_dist = 3.5 * self.size_scale
         
         # True comma shape, fading from head to tail tip
-        self.radii = [7.0, 8.0, 7.5, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.5]
+        base_radii = [7.0, 8.0, 7.5, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.5]
+        self.radii = [radius * self.size_scale for radius in base_radii]
         self.color = random.choice([(255, 90, 40), (220, 220, 220), (255, 170, 50), (240, 100, 40)])
         self.texture_marks = self._generate_texture_marks()
         
@@ -3257,7 +3276,7 @@ class Koi:
         last = self.segments[-1]
         prev = self.segments[-2]
         ang = math.atan2(last[1] - prev[1], last[0] - prev[0])
-        t_len = 14 * tail_scale
+        t_len = 14 * tail_scale * self.size_scale
         t_spread = 0.5
         last_pt = (last[0] + ox, last[1] + oy)
         p1 = (
@@ -3277,8 +3296,8 @@ class Koi:
         f_seg = self.segments[2]
         f_prev = self.segments[1]
         f_ang = math.atan2(f_prev[1] - f_seg[1], f_prev[0] - f_seg[0])
-        flen = 10 * fin_scale
-        f_width = 5 * fin_scale
+        flen = 10 * fin_scale * self.size_scale
+        f_width = 5 * fin_scale * self.size_scale
 
         f_seg_pt = (f_seg[0] + ox, f_seg[1] + oy)
         fx1 = f_seg_pt[0] + math.cos(f_ang - math.pi/2 - 0.4) * ((self.radii[2] * body_scale) + flen)
@@ -3351,6 +3370,8 @@ class Koi:
 
 class Pond:
     FEED_COOLDOWN_SECONDS = 3.0
+    MIN_FISH_COUNT = 1
+    MAX_FISH_COUNT = 12
 
     def _generate_lilypads(self):
         lilypads = []
@@ -3588,7 +3609,11 @@ class Pond:
         self.ripples.append([x, y, 0, 1.0])
 
     def spawn_fish_from_gesture(self):
+        if len(self.fish) >= self.MAX_FISH_COUNT:
+            return False
+
         self.fish.append(self._spawn_koi_from_offscreen())
+        return True
 
     def feed_fish(self, x, y):
         now = time.time()
@@ -3681,6 +3706,11 @@ class Pond:
             else:
                 updated_fish.append(f)
         self.fish = updated_fish
+
+        if not self.fish:
+            self.fish.append(self._spawn_koi_from_offscreen())
+        elif len(self.fish) > self.MAX_FISH_COUNT:
+            self.fish = self.fish[:self.MAX_FISH_COUNT]
             
         for r in self.ripples:
             r[2] += 2.0 
@@ -3880,7 +3910,10 @@ def main(argv=None):
                 if gesture_code == GESTURE_SINGLE_TAP:
                     pond.add_ripple(gesture_x, gesture_y)
                 elif gesture_code == GESTURE_DOUBLE_TAP:
-                    pond.spawn_fish_from_gesture()
+                    spawned = pond.spawn_fish_from_gesture()
+                    if args.debug:
+                        status = "accepted" if spawned else "ignored (max fish)"
+                        print(f"[touch] spawn request {status} at ({gesture_x},{gesture_y})", flush=True)
                 elif gesture_code == GESTURE_LONG_PRESS:
                     fed = pond.feed_fish(gesture_x, gesture_y)
                     if args.debug:

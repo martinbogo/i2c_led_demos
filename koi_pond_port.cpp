@@ -766,12 +766,16 @@ class Koi {
 public:
     static constexpr double kPelletEatCooldownSeconds = 1.0;
 
+    static constexpr std::array<float, 6> kSizeScaleByParameter{{0.58F, 0.72F, 0.88F, 1.00F, 1.18F, 1.38F}};
+
     Vec2 pos;
     HidingState hiding_state = HidingState::Normal;
     double hide_timer = 0.0;
     Vec2 hide_target{};
     float scared = 0.0F;
     float swim_speed_trait = 0.0F;
+    int size_parameter = 3;
+    float size_scale = 1.0F;
     double last_pellet_eat_time = -1.0e9;
     bool offscreen_replacement_checked = false;
     double offscreen_since = -1.0;
@@ -794,9 +798,23 @@ public:
         return clamp_float(trait, 0.0F, 9.0F);
     }
 
+    static int sample_size_parameter() {
+        int size = 3;
+        for (int i = 0; i < 16; ++i) {
+            size = static_cast<int>(std::lround(random_gauss(3.0F, 1.0F)));
+            if (size >= 0 && size <= 5) {
+                return size;
+            }
+        }
+        return clamp_int(size, 0, 5);
+    }
+
     Koi(float x, float y)
-        : pos{x, y}, scared(random_uniform(0.0F, 9.0F)), swim_speed_trait(sample_swim_speed_trait()) {
+        : pos{x, y}, scared(random_uniform(0.0F, 9.0F)), swim_speed_trait(sample_swim_speed_trait()), size_parameter(sample_size_parameter()), size_scale(kSizeScaleByParameter[static_cast<std::size_t>(size_parameter)]) {
         radii = {7.0F, 8.0F, 7.5F, 6.0F, 5.0F, 4.0F, 3.0F, 2.0F, 1.0F, 0.5F};
+        for (auto& radius : radii) {
+            radius *= size_scale;
+        }
         const std::vector<ColorRGB> colors = {
             {255, 90, 40}, {220, 220, 220}, {255, 170, 50}, {240, 100, 40},
         };
@@ -805,6 +823,7 @@ public:
         normalize(vel);
         vel.x *= 2.0F;
         vel.y *= 2.0F;
+        segment_dist *= size_scale;
         texture_marks = generate_texture_marks();
         segments.assign(static_cast<std::size_t>(num_chunks), {x, y});
     }
@@ -1102,7 +1121,7 @@ public:
         const auto& last = segments.back();
         const auto& prev = segments[segments.size() - 2];
         const float ang = std::atan2(last.y - prev.y, last.x - prev.x);
-        const float t_len = 14.0F * tail_scale;
+        const float t_len = 14.0F * tail_scale * size_scale;
         const float t_spread = 0.5F;
         const Vec2 last_pt{last.x + offset.x, last.y + offset.y};
         std::vector<Vec2> tail = {
@@ -1116,8 +1135,8 @@ public:
         const auto& f_seg = segments[2];
         const auto& f_prev = segments[1];
         const float f_ang = std::atan2(f_prev.y - f_seg.y, f_prev.x - f_seg.x);
-        const float flen = 10.0F * fin_scale;
-        const float f_width = 5.0F * fin_scale;
+        const float flen = 10.0F * fin_scale * size_scale;
+        const float f_width = 5.0F * fin_scale * size_scale;
         const Vec2 f_seg_pt{f_seg.x + offset.x, f_seg.y + offset.y};
         const float base_radius = radii[2] * body_scale;
 
@@ -1173,6 +1192,8 @@ public:
 class Pond {
 public:
     static constexpr double kFeedCooldownSeconds = 3.0;
+    static constexpr int kMinFishCount = 1;
+    static constexpr int kMaxFishCount = 12;
 
     std::vector<Lilypad> lilypads;
     std::vector<Koi> fish;
@@ -1289,7 +1310,18 @@ public:
     }
 
     void spawn_fish_from_gesture() {
+        if (static_cast<int>(fish.size()) >= kMaxFishCount) {
+            return;
+        }
         fish.push_back(spawn_koi_from_offscreen());
+    }
+
+    bool try_spawn_fish_from_gesture() {
+        if (static_cast<int>(fish.size()) >= kMaxFishCount) {
+            return false;
+        }
+        fish.push_back(spawn_koi_from_offscreen());
+        return true;
     }
 
     bool feed_fish(float x, float y, double now) {
@@ -1381,6 +1413,12 @@ public:
             }
         }
         fish = std::move(updated);
+
+        if (static_cast<int>(fish.size()) < kMinFishCount) {
+            fish.push_back(spawn_koi_from_offscreen());
+        } else if (static_cast<int>(fish.size()) > kMaxFishCount) {
+            fish.erase(fish.begin() + kMaxFishCount, fish.end());
+        }
 
         for (auto& ripple : ripples) {
             ripple.radius += 2.0F;
@@ -1822,7 +1860,12 @@ int koi_pond_run(bool debug_touch) {
                 if (gesture == kGestureSingleTap) {
                     pond.add_ripple(static_cast<float>(g_gesture_x.load()), static_cast<float>(g_gesture_y.load()));
                 } else if (gesture == kGestureDoubleTap) {
-                    pond.spawn_fish_from_gesture();
+                    const bool spawned = pond.try_spawn_fish_from_gesture();
+                    if (debug_touch) {
+                        std::cout << "[touch] spawn request " << (spawned ? "accepted" : "ignored (max fish)")
+                                  << " at (" << g_gesture_x.load() << ',' << g_gesture_y.load() << ")"
+                                  << std::endl;
+                    }
                 } else if (gesture == kGestureLongPress) {
                     const bool fed = pond.feed_fish(static_cast<float>(g_gesture_x.load()), static_cast<float>(g_gesture_y.load()), now_seconds());
                     if (debug_touch) {
