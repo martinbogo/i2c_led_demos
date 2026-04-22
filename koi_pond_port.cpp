@@ -1602,9 +1602,9 @@ void touch_thread_func() {
     try {
         hal_gpio_set_mode(TOUCH_RST_GPIO, GPIO_MODE_OUT);
         hal_gpio_write(TOUCH_RST_GPIO, GPIO_LOW);
-        hal_delay_ms(10);
+        hal_delay_ms(100);
         hal_gpio_write(TOUCH_RST_GPIO, GPIO_HIGH);
-        hal_delay_ms(50);
+        hal_delay_ms(200);
 
         bool i2c_ok = hal_i2c_init(kTouchI2CPrimary) == 0;
         if (!i2c_ok) {
@@ -1615,6 +1615,9 @@ void touch_thread_func() {
         }
         hal_i2c_write_byte(kTouchAddr, 0xFE, 0x01);
         hal_i2c_write_byte(kTouchAddr, 0xFA, 0x41);
+        hal_i2c_write_byte(kTouchAddr, 0xEC, 0x07);
+        hal_i2c_write_byte(kTouchAddr, 0xEE, 0x01);
+        hal_i2c_write_byte(kTouchAddr, 0xED, 0x0F);
 
         while (!g_stop_touch.load()) {
             std::uint8_t data[6] = {0, 0, 0, 0, 0, 0};

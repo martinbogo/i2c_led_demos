@@ -3698,9 +3698,9 @@ def touch_thread(driver):
             from gpiod.line import Direction, Value
             rst = driver.chip.request_lines(config={17: gpiod.LineSettings(direction=Direction.OUTPUT, output_value=Value.INACTIVE)}, consumer="tr")
             rst.set_value(17, Value.INACTIVE)
-            time.sleep(0.01)
+            time.sleep(0.1)
             rst.set_value(17, Value.ACTIVE)
-            time.sleep(0.05)
+            time.sleep(0.2)
 
         bus = None
         for bus_num in (1, 3):
@@ -3714,8 +3714,11 @@ def touch_thread(driver):
             return
 
         try:
-            bus.write_byte_data(0x15, 0xFE, 0x01) 
-            bus.write_byte_data(0x15, 0xFA, 0x41) 
+            bus.write_byte_data(0x15, 0xFE, 0x01)
+            bus.write_byte_data(0x15, 0xFA, 0x41)
+            bus.write_byte_data(0x15, 0xEC, 0x07)
+            bus.write_byte_data(0x15, 0xEE, 0x01)
+            bus.write_byte_data(0x15, 0xED, 0x0F)
         except:
             pass
 
