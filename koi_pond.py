@@ -3028,51 +3028,110 @@ class Koi:
                 if dist > self.segment_dist:
                     self.segments[i][0] += (s_dx/dist) * (dist - self.segment_dist)
                     self.segments[i][1] += (s_dy/dist) * (dist - self.segment_dist)
-        
-    def draw(self, img_bg):
-        draw = ImageDraw.Draw(img_bg)
-        
-        # Draw tail
+
+    def _draw_shape(
+        self,
+        draw,
+        fill_color,
+        offset=(0.0, 0.0),
+        body_scale=1.0,
+        tail_scale=1.0,
+        fin_scale=1.0,
+        draw_eyes=True,
+        eye_color=(0, 0, 0),
+    ):
+        ox, oy = offset
+
         last = self.segments[-1]
         prev = self.segments[-2]
         ang = math.atan2(last[1] - prev[1], last[0] - prev[0])
-        t_len = 14
+        t_len = 14 * tail_scale
         t_spread = 0.5
-        p1 = (last[0] + math.cos(ang - t_spread) * t_len, last[1] + math.sin(ang - t_spread) * t_len)
-        p2 = (last[0] + math.cos(ang + t_spread) * t_len, last[1] + math.sin(ang + t_spread) * t_len)
-        p3 = (last[0] + math.cos(ang) * (t_len * 0.3), last[1] + math.sin(ang) * (t_len * 0.3))
-        draw.polygon([last, p1, p3, p2], fill=self.color)
-        
-        # Pectoral fins on segment 2
+        last_pt = (last[0] + ox, last[1] + oy)
+        p1 = (
+            last_pt[0] + math.cos(ang - t_spread) * t_len,
+            last_pt[1] + math.sin(ang - t_spread) * t_len,
+        )
+        p2 = (
+            last_pt[0] + math.cos(ang + t_spread) * t_len,
+            last_pt[1] + math.sin(ang + t_spread) * t_len,
+        )
+        p3 = (
+            last_pt[0] + math.cos(ang) * (t_len * 0.3),
+            last_pt[1] + math.sin(ang) * (t_len * 0.3),
+        )
+        draw.polygon([last_pt, p1, p3, p2], fill=fill_color)
+
         f_seg = self.segments[2]
         f_prev = self.segments[1]
-        f_ang = math.atan2(f_prev[1] - f_seg[1], f_prev[0] - f_seg[0]) # Facing forward direction
-        flen = 10
-        f_width = 5
-        
-        fx1 = f_seg[0] + math.cos(f_ang - math.pi/2 - 0.4) * (self.radii[2] + flen)
-        fy1 = f_seg[1] + math.sin(f_ang - math.pi/2 - 0.4) * (self.radii[2] + flen)
-        draw.polygon([f_seg, (fx1, fy1), (f_seg[0] + math.cos(f_ang)*f_width, f_seg[1] + math.sin(f_ang)*f_width)], fill=self.color)
-        
-        fx2 = f_seg[0] + math.cos(f_ang + math.pi/2 + 0.4) * (self.radii[2] + flen)
-        fy2 = f_seg[1] + math.sin(f_ang + math.pi/2 + 0.4) * (self.radii[2] + flen)
-        draw.polygon([f_seg, (fx2, fy2), (f_seg[0] + math.cos(f_ang)*f_width, f_seg[1] + math.sin(f_ang)*f_width)], fill=self.color)
-        
-        # Draw body chunks from tail to head
+        f_ang = math.atan2(f_prev[1] - f_seg[1], f_prev[0] - f_seg[0])
+        flen = 10 * fin_scale
+        f_width = 5 * fin_scale
+
+        f_seg_pt = (f_seg[0] + ox, f_seg[1] + oy)
+        fx1 = f_seg_pt[0] + math.cos(f_ang - math.pi/2 - 0.4) * ((self.radii[2] * body_scale) + flen)
+        fy1 = f_seg_pt[1] + math.sin(f_ang - math.pi/2 - 0.4) * ((self.radii[2] * body_scale) + flen)
+        draw.polygon(
+            [
+                f_seg_pt,
+                (fx1, fy1),
+                (
+                    f_seg_pt[0] + math.cos(f_ang) * f_width,
+                    f_seg_pt[1] + math.sin(f_ang) * f_width,
+                ),
+            ],
+            fill=fill_color,
+        )
+
+        fx2 = f_seg_pt[0] + math.cos(f_ang + math.pi/2 + 0.4) * ((self.radii[2] * body_scale) + flen)
+        fy2 = f_seg_pt[1] + math.sin(f_ang + math.pi/2 + 0.4) * ((self.radii[2] * body_scale) + flen)
+        draw.polygon(
+            [
+                f_seg_pt,
+                (fx2, fy2),
+                (
+                    f_seg_pt[0] + math.cos(f_ang) * f_width,
+                    f_seg_pt[1] + math.sin(f_ang) * f_width,
+                ),
+            ],
+            fill=fill_color,
+        )
+
         for i in reversed(range(self.num_chunks)):
             seg = self.segments[i]
-            r = self.radii[i]
-            draw.ellipse((seg[0]-r, seg[1]-r, seg[0]+r, seg[1]+r), fill=self.color)
-            
-            # Tiny eyes
-            if i == 0:
+            r = self.radii[i] * body_scale
+            sx = seg[0] + ox
+            sy = seg[1] + oy
+            draw.ellipse((sx-r, sy-r, sx+r, sy+r), fill=fill_color)
+
+            if i == 0 and draw_eyes:
                 h_ang = math.atan2(self.vel[1], self.vel[0])
-                ex1 = seg[0] + math.cos(h_ang - math.pi/2.5) * (r * 0.7)
-                ey1 = seg[1] + math.sin(h_ang - math.pi/2.5) * (r * 0.7)
-                ex2 = seg[0] + math.cos(h_ang + math.pi/2.5) * (r * 0.7)
-                ey2 = seg[1] + math.sin(h_ang + math.pi/2.5) * (r * 0.7)
-                draw.ellipse((ex1-1.5, ey1-1.5, ex1+1.5, ey1+1.5), fill=(0,0,0))
-                draw.ellipse((ex2-1.5, ey2-1.5, ex2+1.5, ey2+1.5), fill=(0,0,0))
+                ex1 = sx + math.cos(h_ang - math.pi/2.5) * (r * 0.7)
+                ey1 = sy + math.sin(h_ang - math.pi/2.5) * (r * 0.7)
+                ex2 = sx + math.cos(h_ang + math.pi/2.5) * (r * 0.7)
+                ey2 = sy + math.sin(h_ang + math.pi/2.5) * (r * 0.7)
+                draw.ellipse((ex1-1.5, ey1-1.5, ex1+1.5, ey1+1.5), fill=eye_color)
+                draw.ellipse((ex2-1.5, ey2-1.5, ex2+1.5, ey2+1.5), fill=eye_color)
+        
+    def draw(self, img_bg):
+        shadow_layer = Image.new("RGBA", img_bg.size, (0, 0, 0, 0))
+        shadow_draw = ImageDraw.Draw(shadow_layer, "RGBA")
+        shadow_offset = (4.0, 5.0)
+        self._draw_shape(
+            shadow_draw,
+            (10, 28, 22, 68),
+            offset=shadow_offset,
+            body_scale=1.08,
+            tail_scale=0.96,
+            fin_scale=0.88,
+            draw_eyes=False,
+        )
+
+        composited = Image.alpha_composite(img_bg.convert("RGBA"), shadow_layer)
+        img_bg.paste(composited.convert("RGB"))
+
+        draw = ImageDraw.Draw(img_bg)
+        self._draw_shape(draw, self.color)
 
 class Pond:
     def __init__(self):
@@ -3093,20 +3152,34 @@ class Pond:
         xs = assets.grid_x
         ys = assets.grid_y
 
-        bottom_mask = np.clip((ys - (LCD_HEIGHT * 0.34)) / (LCD_HEIGHT * 0.66), 0.0, 1.0)
-        drift = np.sin((xs * 0.018) + now * 0.7) * 10.0
-        caustic_y = ys + drift
+        radial_x = (xs - LCD_WIDTH * 0.5) / (LCD_WIDTH * 0.56)
+        radial_y = (ys - LCD_HEIGHT * 0.5) / (LCD_HEIGHT * 0.56)
+        radial_mask = np.clip(1.0 - np.hypot(radial_x, radial_y), 0.0, 1.0)
+        depth_mask = 0.35 + 0.65 * np.clip((ys - (LCD_HEIGHT * 0.08)) / (LCD_HEIGHT * 0.92), 0.0, 1.0)
+        shimmer_mask = np.clip((radial_mask * 0.75) + 0.25, 0.0, 1.0) * depth_mask
 
-        wave1 = np.sin(xs * 0.095 + now * 2.8 + np.sin(caustic_y * 0.052 - now * 1.4) * 1.8)
-        wave2 = np.sin((xs + caustic_y) * 0.062 - now * 3.2)
-        wave3 = np.sin(np.hypot(xs - LCD_WIDTH * 0.55, caustic_y - LCD_HEIGHT * 0.88) * 0.115 - now * 2.0)
+        drift_x = xs + np.sin((ys * 0.026) - now * 0.95) * 11.0
+        drift_y = ys + np.sin((xs * 0.021) + now * 0.75) * 8.0
 
-        caustic = np.maximum(0.0, wave1 + wave2 * 0.75 + wave3 * 0.65 - 1.15)
-        caustic = (caustic ** 1.6) * bottom_mask * 42.0
+        wave1 = np.sin(drift_x * 0.102 + now * 3.0 + np.sin(drift_y * 0.054 - now * 1.2) * 1.9)
+        wave2 = np.sin((drift_x + drift_y) * 0.064 - now * 3.5)
+        wave3 = np.sin(np.hypot(drift_x - LCD_WIDTH * 0.58, drift_y - LCD_HEIGHT * 0.22) * 0.12 - now * 2.4)
+        wave4 = np.sin((drift_x * 0.036) - (drift_y * 0.071) + now * 1.6)
 
-        img_arr[..., 0] = np.clip(img_arr[..., 0] + caustic * 0.38, 0, 255)
-        img_arr[..., 1] = np.clip(img_arr[..., 1] + caustic * 0.85, 0, 255)
-        img_arr[..., 2] = np.clip(img_arr[..., 2] + caustic * 0.58, 0, 255)
+        caustic = np.maximum(0.0, wave1 + wave2 * 0.82 + wave3 * 0.72 + wave4 * 0.45 - 1.05)
+        caustic = (caustic ** 1.48) * shimmer_mask * 56.0
+
+        sun_glow = np.maximum(
+            0.0,
+            np.sin((xs * 0.031) - (ys * 0.043) + now * 1.8)
+            + np.sin((xs * 0.018) + (ys * 0.026) - now * 1.15)
+            - 0.1,
+        )
+        sun_glow = (sun_glow ** 1.65) * (0.3 + radial_mask * 0.7) * (0.45 + depth_mask * 0.55) * 16.0
+
+        img_arr[..., 0] = np.clip(img_arr[..., 0] + caustic * 0.44 + sun_glow * 0.32, 0, 255)
+        img_arr[..., 1] = np.clip(img_arr[..., 1] + caustic * 0.92 + sun_glow * 0.58, 0, 255)
+        img_arr[..., 2] = np.clip(img_arr[..., 2] + caustic * 0.66 + sun_glow * 0.40, 0, 255)
 
         return Image.fromarray(img_arr.astype(np.uint8), "RGB")
 
