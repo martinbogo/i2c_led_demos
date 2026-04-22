@@ -11,9 +11,10 @@ Simulates boid-based fish with photorealistic sprites sliced to morph on kinemat
 import base64
 import io
 import math
-import time
-import threading
 import random
+import signal
+import threading
+import time
 import numpy as np
 from PIL import Image, ImageDraw
 
@@ -3607,6 +3608,17 @@ def main():
     print("Initializing display...")
     driver = DisplayDriver(spi_speed_hz=80000000)
     driver.init()
+
+    stop_requested = False
+
+    def request_stop(signum, _frame):
+        nonlocal stop_requested
+        stop_requested = True
+
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sighup = signal.getsignal(signal.SIGHUP)
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGHUP, request_stop)
     
     print("Starting touch thread...")
     t = threading.Thread(target=touch_thread, args=(driver,), daemon=True)
@@ -3617,7 +3629,7 @@ def main():
     print("Running Koi pond...")
     try:
         last_touch = False
-        while True:
+        while not stop_requested:
             t0 = time.time()
             if is_touched and not last_touch:
                 pond.add_ripple(touch_x, touch_y)
@@ -3637,6 +3649,8 @@ def main():
             elapsed = time.time() - t0
             if elapsed < 0.033:
                 time.sleep(0.033 - elapsed)
+
+        print("Exiting.")
             
     except KeyboardInterrupt:
         print("Exiting.")
@@ -3645,6 +3659,10 @@ def main():
         with open("/tmp/koi_crash_trace.log", "w") as f:
             traceback.print_exc(file=f)
         raise
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGHUP, previous_sighup)
+        driver.cleanup()
 
 if __name__ == "__main__":
     main()

@@ -19,6 +19,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -494,6 +495,8 @@ public:
         hal_delay_ms(10);
         write_command(0x29);
         hal_delay_ms(20);
+        write_black_frame();
+        hal_delay_ms(20);
         set_backlight(true);
         hal_delay_ms(100);
         initialized_ = true;
@@ -523,6 +526,8 @@ public:
         if (!initialized_) {
             return;
         }
+        write_black_frame();
+        hal_delay_ms(20);
         set_backlight(false);
         write_command(0x28);
         hal_delay_ms(10);
@@ -559,6 +564,19 @@ private:
         gpio_set(LCD_CS_GPIO, false);
         hal_spi_write(data, len);
         gpio_set(LCD_CS_GPIO, true);
+    }
+
+    void write_black_frame() {
+        const std::size_t pixel_count = static_cast<std::size_t>(kLcdWidth * kLcdHeight);
+        const std::size_t byte_count = pixel_count * 2U;
+        if (frame_bytes_.size() != byte_count) {
+            frame_bytes_.assign(byte_count, 0);
+        } else {
+            std::fill(frame_bytes_.begin(), frame_bytes_.end(), 0);
+        }
+        set_address_window(0, 0, kLcdWidth - 1, kLcdHeight - 1);
+        write_command(0x2C);
+        write_data(frame_bytes_.data(), frame_bytes_.size());
     }
 
     void write_cmd_data(std::uint8_t cmd, const std::initializer_list<std::uint8_t>& bytes) {
@@ -1436,6 +1454,11 @@ std::atomic<int> g_touch_x{-1};
 std::atomic<int> g_touch_y{-1};
 std::atomic<bool> g_is_touched{false};
 std::atomic<bool> g_stop_touch{false};
+std::atomic<bool> g_should_exit{false};
+
+void handle_exit_signal(int /*signum*/) {
+    g_should_exit.store(true);
+}
 
 void touch_thread_func() {
     try {
@@ -1477,6 +1500,12 @@ void touch_thread_func() {
 }  // namespace
 
 int koi_pond_run() {
+    auto previous_sigint = std::signal(SIGINT, handle_exit_signal);
+#ifdef SIGHUP
+    auto previous_sighup = std::signal(SIGHUP, handle_exit_signal);
+#endif
+
+    std::thread touch_thread;
     try {
         std::cout << "Loading assets..." << std::endl;
         PondAssets assets;
@@ -1488,13 +1517,14 @@ int koi_pond_run() {
 
         std::cout << "Starting touch thread..." << std::endl;
         g_stop_touch.store(false);
-        std::thread touch_thread(touch_thread_func);
+        g_should_exit.store(false);
+        touch_thread = std::thread(touch_thread_func);
 
         Pond pond;
         std::cout << "Running Koi pond..." << std::endl;
 
         bool last_touch = false;
-        while (true) {
+        while (!g_should_exit.load()) {
             const auto frame_start = std::chrono::steady_clock::now();
             const bool is_touched = g_is_touched.load();
             if (is_touched && !last_touch) {
@@ -1511,17 +1541,41 @@ int koi_pond_run() {
         }
 
         g_stop_touch.store(true);
-        touch_thread.join();
+        if (touch_thread.joinable()) {
+            touch_thread.join();
+        }
+        driver.cleanup();
+
+        std::signal(SIGINT, previous_sigint);
+#ifdef SIGHUP
+        std::signal(SIGHUP, previous_sighup);
+#endif
+        return 0;
     } catch (const std::exception& ex) {
+        g_stop_touch.store(true);
+        if (touch_thread.joinable()) {
+            touch_thread.join();
+        }
+        std::signal(SIGINT, previous_sigint);
+#ifdef SIGHUP
+        std::signal(SIGHUP, previous_sighup);
+#endif
         std::ofstream crash_log("/tmp/koi_crash_trace.log");
         crash_log << ex.what() << '\n';
         std::cerr << ex.what() << std::endl;
         return 1;
     } catch (...) {
+        g_stop_touch.store(true);
+        if (touch_thread.joinable()) {
+            touch_thread.join();
+        }
+        std::signal(SIGINT, previous_sigint);
+#ifdef SIGHUP
+        std::signal(SIGHUP, previous_sighup);
+#endif
         std::ofstream crash_log("/tmp/koi_crash_trace.log");
         crash_log << "Unknown exception" << '\n';
         std::cerr << "Unknown exception" << std::endl;
         return 1;
     }
-    return 0;
 }

@@ -53,6 +53,8 @@ class DisplayDriver:
         self.spi_speed_hz = spi_speed_hz
         self.backlight_active_high = backlight_active_high
         self.use_gpio_cs = use_gpio_cs
+        self._initialized = False
+        self._black_frame = bytes(LCD_WIDTH * LCD_HEIGHT * 2)
         
         # Initialize SPI
         self.spi = spidev.SpiDev()
@@ -241,10 +243,16 @@ class DisplayDriver:
         # Display on
         self._write_command(GC9A01A_DISPON)
         time.sleep(0.02)
+
+        # Clear any retained panel contents before the backlight is enabled.
+        self.blank_screen()
+        time.sleep(0.02)
         
         # Backlight on
         self._set_backlight(True)
         time.sleep(0.1)
+
+        self._initialized = True
         
         self._log("[LCD] Display initialized")
     
@@ -296,6 +304,10 @@ class DisplayDriver:
         self._write_command(GC9A01A_RAMWR)
         self._write_data_bytes(rgb565_data)
 
+    def blank_screen(self):
+        """Fill the entire panel with black pixels."""
+        self._draw_rgb565_frame(self._black_frame)
+
     def draw_rgb565_region(self, x, y, width, height, rgb565_data):
         """Draw an RGB565 region at x,y with given width/height."""
         if width <= 0 or height <= 0:
@@ -312,6 +324,18 @@ class DisplayDriver:
     
     def cleanup(self):
         """Cleanup resources"""
+        try:
+            if self._initialized:
+                self.blank_screen()
+                time.sleep(0.02)
+                self._set_backlight(False)
+                self._write_command(0x28)
+                time.sleep(0.01)
+                self._write_command(0x10)
+                time.sleep(0.12)
+        except Exception:
+            pass
+        self._initialized = False
         try:
             if self.lines:
                 self.lines.release()
