@@ -47,6 +47,11 @@ struct spi_ioc_transfer {
 
 static int spi_fd = -1;
 static int i2c_fd = -1;
+static uint32_t spi_speed_hz_configured = 0;
+
+enum {
+    SPI_TRANSFER_CHUNK_SIZE = 4096
+};
 
 #ifdef __linux__
 static struct gpiod_chip *gpio_chip = NULL;
@@ -313,6 +318,8 @@ int hal_spi_init(const char *device, uint32_t speed_hz, uint8_t mode) {
         spi_fd = -1;
         return -1;
     }
+
+    spi_speed_hz_configured = speed_hz;
     
     return 0;
 }
@@ -322,22 +329,35 @@ int hal_spi_close(void) {
         close(spi_fd);
         spi_fd = -1;
     }
+    spi_speed_hz_configured = 0;
     return 0;
 }
 
 int hal_spi_write(const uint8_t *data, size_t len) {
-    if (spi_fd < 0) return -1;
-    
-    struct spi_ioc_transfer tr = {
-        .tx_buf = (unsigned long)data,
-        .rx_buf = 0,
-        .len = len,
-        .delay_usecs = 0,
-        .speed_hz = 0,
-        .bits_per_word = 8,
-    };
-    
-    return ioctl(spi_fd, SPI_IOC_MESSAGE(1), &tr);
+    size_t offset = 0;
+
+    if (spi_fd < 0 || data == NULL) return -1;
+
+    while (offset < len) {
+        const size_t chunk_len = (len - offset) > SPI_TRANSFER_CHUNK_SIZE ? SPI_TRANSFER_CHUNK_SIZE : (len - offset);
+        struct spi_ioc_transfer tr = {
+            .tx_buf = (unsigned long)(data + offset),
+            .rx_buf = 0,
+            .len = chunk_len,
+            .delay_usecs = 0,
+            .speed_hz = spi_speed_hz_configured,
+            .bits_per_word = 8,
+        };
+
+        if (ioctl(spi_fd, SPI_IOC_MESSAGE(1), &tr) < 0) {
+            perror("SPI write failed");
+            return -1;
+        }
+
+        offset += chunk_len;
+    }
+
+    return 0;
 }
 
 int hal_spi_read(uint8_t *data, size_t len) {
