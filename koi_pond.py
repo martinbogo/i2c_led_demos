@@ -2864,13 +2864,21 @@ class Lilypad:
             pass
 
 class Koi:
+    @staticmethod
+    def _sample_swim_speed_trait():
+        for _ in range(12):
+            trait = random.gauss(5.0, 1.0)
+            if 0.0 <= trait <= 9.0:
+                return trait
+        return max(0.0, min(9.0, trait))
+
     def __init__(self, x, y):
         self.pos = [x, y]
         self.hiding_state = "normal"
         self.hide_timer = 0
         self.hide_target = None
         self.scared = random.uniform(0, 9.0)
-        self.swim_speed_trait = random.uniform(0.0, 9.0)
+        self.swim_speed_trait = self._sample_swim_speed_trait()
         self.offscreen_replacement_checked = False
         self.offscreen_since = None
         self.vel = [random.uniform(-1, 1), random.uniform(-1, 1)]
