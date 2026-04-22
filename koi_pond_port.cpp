@@ -37,8 +37,8 @@ constexpr int kLcdWidth = LCD_WIDTH;
 constexpr int kLcdHeight = LCD_HEIGHT;
 constexpr float kTwoPi = static_cast<float>(M_PI * 2.0);
 constexpr std::size_t kSinLutSize = 4096;
-constexpr const char* kTouchI2CPrimary = "/dev/i2c-3";
-constexpr const char* kTouchI2CFallback = TOUCH_I2C_BUS;
+constexpr const char* kTouchI2CPrimary = TOUCH_I2C_BUS;
+constexpr const char* kTouchI2CFallback = "/dev/i2c-3";
 constexpr std::uint8_t kTouchAddr = 0x15;
 constexpr std::uint32_t kSpiSpeedHz = SPI_SPEED_HZ;
 
