@@ -3284,13 +3284,41 @@ class Koi:
         img_bg.paste(composited.convert("RGB"))
 
 class Pond:
+    def _generate_lilypads(self):
+        lilypads = []
+        count = random.randint(3, 6)
+        margin = 28.0
+        min_distance = 52.0
+        max_attempts = 24
+
+        for _ in range(count):
+            chosen_x = random.uniform(margin, LCD_WIDTH - margin)
+            chosen_y = random.uniform(margin, LCD_HEIGHT - margin)
+
+            for _attempt in range(max_attempts):
+                candidate_x = random.uniform(margin, LCD_WIDTH - margin)
+                candidate_y = random.uniform(margin, LCD_HEIGHT - margin)
+                if all(
+                    math.hypot(candidate_x - pad.pos[0], candidate_y - pad.pos[1]) >= min_distance
+                    for pad in lilypads
+                ):
+                    chosen_x = candidate_x
+                    chosen_y = candidate_y
+                    break
+
+            lilypads.append(
+                Lilypad(
+                    chosen_x,
+                    chosen_y,
+                    rot=random.uniform(0, 360),
+                    scale=random.uniform(0.78, 1.25),
+                )
+            )
+
+        return lilypads
+
     def __init__(self):
-        self.lilypads = [
-            Lilypad(40, 40, rot=random.uniform(0, 360), scale=0.8),
-            Lilypad(200, 60, rot=random.uniform(0, 360), scale=1.2),
-            Lilypad(50, 200, rot=random.uniform(0, 360), scale=0.9),
-            Lilypad(180, 190, rot=random.uniform(0, 360), scale=1.1)
-        ]
+        self.lilypads = self._generate_lilypads()
         
         self.fish = [Koi(LCD_WIDTH/2 + random.uniform(-50,50), LCD_HEIGHT/2 + random.uniform(-50,50)) for _ in range(6)]
         self.ripples = [] 

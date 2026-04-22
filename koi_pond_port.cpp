@@ -1080,10 +1080,42 @@ public:
     double start_time = now_seconds();
 
     Pond() {
-        lilypads.emplace_back(40.0F, 40.0F, random_uniform(0.0F, 360.0F), 0.8F);
-        lilypads.emplace_back(200.0F, 60.0F, random_uniform(0.0F, 360.0F), 1.2F);
-        lilypads.emplace_back(50.0F, 200.0F, random_uniform(0.0F, 360.0F), 0.9F);
-        lilypads.emplace_back(180.0F, 190.0F, random_uniform(0.0F, 360.0F), 1.1F);
+        const int lilypad_count = random_int(3, 6);
+        constexpr float margin = 28.0F;
+        constexpr float min_distance = 52.0F;
+        constexpr int max_attempts = 24;
+        lilypads.reserve(static_cast<std::size_t>(lilypad_count));
+
+        for (int i = 0; i < lilypad_count; ++i) {
+            float chosen_x = random_uniform(margin, kLcdWidth - margin);
+            float chosen_y = random_uniform(margin, kLcdHeight - margin);
+
+            for (int attempt = 0; attempt < max_attempts; ++attempt) {
+                const float candidate_x = random_uniform(margin, kLcdWidth - margin);
+                const float candidate_y = random_uniform(margin, kLcdHeight - margin);
+                bool overlaps = false;
+                for (const auto& pad : lilypads) {
+                    const float dx = candidate_x - pad.pos.x;
+                    const float dy = candidate_y - pad.pos.y;
+                    if (std::sqrt(dx * dx + dy * dy) < min_distance) {
+                        overlaps = true;
+                        break;
+                    }
+                }
+                if (!overlaps) {
+                    chosen_x = candidate_x;
+                    chosen_y = candidate_y;
+                    break;
+                }
+            }
+
+            lilypads.emplace_back(
+                chosen_x,
+                chosen_y,
+                random_uniform(0.0F, 360.0F),
+                random_uniform(0.78F, 1.25F));
+        }
+
         for (int i = 0; i < 6; ++i) {
             fish.emplace_back(kLcdWidth * 0.5F + random_uniform(-50.0F, 50.0F), kLcdHeight * 0.5F + random_uniform(-50.0F, 50.0F));
         }
