@@ -2897,29 +2897,29 @@ class Koi:
         return tuple(max(0, min(255, int(c))) for c in color)
 
     def _generate_texture_marks(self):
-        base_r, base_g, base_b = self.color
-
-        if max(self.color) - min(self.color) < 40:
-            primary = self._clamp_color((245, 125, 70))
-            secondary = self._clamp_color((55, 45, 40))
-        elif base_r > 240 and base_g > 150:
-            primary = self._clamp_color((245, 225, 210))
-            secondary = self._clamp_color((215, 110, 55))
-        else:
-            primary = self._clamp_color((base_r + 22, base_g + 18, base_b + 14))
-            secondary = self._clamp_color((base_r - 34, base_g - 24, base_b - 20))
+        palette = [
+            (248, 244, 232),
+            (255, 188, 82),
+            (255, 132, 70),
+            (234, 84, 48),
+            (76, 56, 48),
+            (34, 30, 28),
+            (232, 210, 120),
+        ]
 
         marks = []
-        mark_count = random.randint(3, 5)
-        for idx in range(mark_count):
-            seg_index = random.randint(0, max(1, self.num_chunks - 3))
+        mark_count = random.randint(0, 3)
+        body_start = 2
+        body_end = max(body_start, self.num_chunks - 4)
+        for _ in range(mark_count):
+            seg_index = random.randint(body_start, body_end)
             side = random.choice([-1.0, 1.0])
-            along = random.uniform(-0.35, 0.55)
-            lateral = random.uniform(0.05, 0.55)
-            radius_scale = random.uniform(0.35, 0.78) * (1.0 - seg_index / (self.num_chunks + 1))
-            stretch = random.uniform(0.9, 1.8)
-            tint = primary if idx % 2 == 0 else secondary
-            alpha = random.randint(150, 225) if idx % 2 == 0 else random.randint(95, 165)
+            along = random.uniform(-0.28, 0.15)
+            lateral = random.uniform(0.10, 0.42)
+            radius_scale = random.uniform(0.22, 0.48) * (1.0 - seg_index / (self.num_chunks + 2))
+            stretch = random.uniform(0.8, 1.35)
+            tint = random.choice(palette)
+            alpha = random.randint(115, 205)
             marks.append(
                 {
                     "segment": seg_index,
