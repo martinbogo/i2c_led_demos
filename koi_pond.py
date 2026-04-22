@@ -3740,12 +3740,15 @@ def touch_thread(driver):
         last_tap_time = -10.0
         last_tap_x = -1
         last_tap_y = -1
+        last_hw_gesture_signature = None
 
         while True:
             try:
                 data = bus.read_i2c_block_data(0x15, 0x01, 6)
                 gesture = data[0]
                 now = time.monotonic()
+                if gesture not in (GESTURE_DOUBLE_TAP, GESTURE_LONG_PRESS):
+                    last_hw_gesture_signature = None
                 if not press_active and last_tap_time > 0.0 and now - last_tap_time > DOUBLE_TAP_MAX_GAP:
                     if now - last_double_tap_emit > 0.05:
                         gesture_x, gesture_y, gesture_code = last_tap_x, last_tap_y, GESTURE_SINGLE_TAP
@@ -3759,19 +3762,22 @@ def touch_thread(driver):
                     x = (LCD_WIDTH - 1) - x
                     touch_x, touch_y, is_touched = x, y, True
                     last_contact_x, last_contact_y = x, y
+                    hw_signature = (gesture, x, y)
 
-                    if gesture == GESTURE_DOUBLE_TAP and now - last_double_tap_emit > 0.35:
+                    if gesture == GESTURE_DOUBLE_TAP and hw_signature != last_hw_gesture_signature and now - last_double_tap_emit > 0.35:
                         gesture_x, gesture_y, gesture_code = x, y, gesture
                         gesture_seq += 1
                         last_double_tap_emit = now
                         last_tap_time = -10.0
                         last_tap_x, last_tap_y = -1, -1
-                    elif gesture == GESTURE_LONG_PRESS and now - last_long_press_emit > 1.10:
+                        last_hw_gesture_signature = hw_signature
+                    elif gesture == GESTURE_LONG_PRESS and hw_signature != last_hw_gesture_signature and now - last_long_press_emit > 1.10:
                         gesture_x, gesture_y, gesture_code = x, y, gesture
                         gesture_seq += 1
                         last_long_press_emit = now
                         last_tap_time = -10.0
                         last_tap_x, last_tap_y = -1, -1
+                        last_hw_gesture_signature = hw_signature
 
                     if data[1] > 0:
                         if not press_active:

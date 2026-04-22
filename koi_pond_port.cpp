@@ -1636,6 +1636,9 @@ void touch_thread_func() {
         int last_tap_y = -1;
         double last_double_tap_emit = -10.0;
         double last_long_press_emit = -10.0;
+        int last_hw_gesture = -1;
+        int last_hw_gesture_x = -1;
+        int last_hw_gesture_y = -1;
 
         while (!g_stop_touch.load()) {
             std::uint8_t data[6] = {0, 0, 0, 0, 0, 0};
@@ -1645,6 +1648,11 @@ void touch_thread_func() {
                 const int y = ((data[4] & 0x0F) << 8) | data[5];
                 const int mapped_x = (kLcdWidth - 1) - x;
                 const double now = now_seconds();
+                if (gesture != kGestureDoubleTap && gesture != kGestureLongPress) {
+                    last_hw_gesture = -1;
+                    last_hw_gesture_x = -1;
+                    last_hw_gesture_y = -1;
+                }
                 if (!press_active && last_tap_time > 0.0 && now - last_tap_time > kDoubleTapMaxGapSeconds) {
                     g_gesture_x.store(last_tap_x);
                     g_gesture_y.store(last_tap_y);
@@ -1660,8 +1668,9 @@ void touch_thread_func() {
                     g_is_touched.store(data[1] > 0);
                     last_contact_x = mapped_x;
                     last_contact_y = y;
+                    const bool new_hw_signature = gesture != last_hw_gesture || mapped_x != last_hw_gesture_x || y != last_hw_gesture_y;
 
-                    if (gesture == kGestureDoubleTap && now - last_double_tap_emit > 0.35) {
+                    if (gesture == kGestureDoubleTap && new_hw_signature && now - last_double_tap_emit > 0.35) {
                         g_gesture_x.store(mapped_x);
                         g_gesture_y.store(y);
                         g_gesture_code.store(gesture);
@@ -1670,7 +1679,10 @@ void touch_thread_func() {
                         last_tap_time = -10.0;
                         last_tap_x = -1;
                         last_tap_y = -1;
-                    } else if (gesture == kGestureLongPress && now - last_long_press_emit > 1.10) {
+                        last_hw_gesture = gesture;
+                        last_hw_gesture_x = mapped_x;
+                        last_hw_gesture_y = y;
+                    } else if (gesture == kGestureLongPress && new_hw_signature && now - last_long_press_emit > 1.10) {
                         g_gesture_x.store(mapped_x);
                         g_gesture_y.store(y);
                         g_gesture_code.store(gesture);
@@ -1679,6 +1691,9 @@ void touch_thread_func() {
                         last_tap_time = -10.0;
                         last_tap_x = -1;
                         last_tap_y = -1;
+                        last_hw_gesture = gesture;
+                        last_hw_gesture_x = mapped_x;
+                        last_hw_gesture_y = y;
                     }
 
                     if (data[1] > 0) {
