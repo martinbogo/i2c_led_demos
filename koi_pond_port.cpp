@@ -4,6 +4,17 @@
 #include "hal_gpio_spi.h"
 #include "koi_pond_assets.h"
 
+#if __has_include(<xtensor/xadapt.hpp>) && __has_include(<xtensor/xbuilder.hpp>) && __has_include(<xtensor/xmath.hpp>) && __has_include(<xtensor/xvectorize.hpp>)
+#define KOI_POND_HAS_XTENSOR 1
+#include <xtensor/xadapt.hpp>
+#include <xtensor/xbuilder.hpp>
+#include <xtensor/xmath.hpp>
+#include <xtensor/xtensor.hpp>
+#include <xtensor/xvectorize.hpp>
+#else
+#define KOI_POND_HAS_XTENSOR 0
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -24,6 +35,9 @@ namespace {
 
 constexpr int kLcdWidth = LCD_WIDTH;
 constexpr int kLcdHeight = LCD_HEIGHT;
+constexpr float kPi = static_cast<float>(M_PI);
+constexpr float kTwoPi = static_cast<float>(M_PI * 2.0);
+constexpr std::size_t kSinLutSize = 4096;
 constexpr const char* kTouchI2CPrimary = "/dev/i2c-3";
 constexpr const char* kTouchI2CFallback = TOUCH_I2C_BUS;
 constexpr std::uint8_t kTouchAddr = 0x15;
@@ -83,6 +97,60 @@ double now_seconds() {
 std::mt19937& global_rng() {
     static thread_local std::mt19937 rng(std::random_device{}());
     return rng;
+}
+
+template <typename Fn>
+void parallel_for_rows(int height, Fn&& fn) {
+    unsigned int worker_count = std::thread::hardware_concurrency();
+    if (worker_count == 0U) {
+        worker_count = 1U;
+    }
+    worker_count = std::min(worker_count, 4U);
+    if (worker_count <= 1U || height < static_cast<int>(worker_count) * 24) {
+        fn(0, height);
+        return;
+    }
+
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count);
+    const int rows_per_worker = height / static_cast<int>(worker_count);
+    int row_begin = 0;
+    for (unsigned int worker = 0; worker < worker_count; ++worker) {
+        const int row_end = (worker == worker_count - 1U) ? height : (row_begin + rows_per_worker);
+        workers.emplace_back([row_begin, row_end, &fn]() {
+            fn(row_begin, row_end);
+        });
+        row_begin = row_end;
+    }
+    for (auto& worker : workers) {
+        worker.join();
+    }
+}
+
+const std::array<float, kSinLutSize + 1>& sin_lut() {
+    static const auto lut = [] {
+        std::array<float, kSinLutSize + 1> values{};
+        for (std::size_t i = 0; i <= kSinLutSize; ++i) {
+            const float angle = (static_cast<float>(i) / static_cast<float>(kSinLutSize)) * kTwoPi;
+            values[i] = std::sin(angle);
+        }
+        return values;
+    }();
+    return lut;
+}
+
+float fast_sin(float angle) {
+    float wrapped = std::fmod(angle, kTwoPi);
+    if (wrapped < 0.0F) {
+        wrapped += kTwoPi;
+    }
+    const float pos = wrapped * (static_cast<float>(kSinLutSize) / kTwoPi);
+    const std::size_t idx = static_cast<std::size_t>(pos);
+    const float frac = pos - static_cast<float>(idx);
+    const auto& lut = sin_lut();
+    const float a = lut[idx];
+    const float b = lut[std::min(idx + 1, kSinLutSize)];
+    return a + (b - a) * frac;
 }
 
 float random_uniform(float lo, float hi) {
@@ -559,6 +627,10 @@ public:
     RGBImage bg;
     std::vector<float> grid_x;
     std::vector<float> grid_y;
+    std::vector<float> radial_mask;
+    std::vector<float> depth_mask;
+    std::vector<float> shimmer_mask;
+    std::vector<float> sun_mask;
 
     PondAssets()
         : bg(copy_rgb_from_asset(
@@ -581,13 +653,28 @@ public:
             koi_pond_assets::LILYPAD_3_HEIGHT,
             koi_pond_assets::LILYPAD_3_DATA.data(),
             koi_pond_assets::LILYPAD_3_DATA.size()));
-        grid_x.resize(static_cast<std::size_t>(kLcdWidth * kLcdHeight));
-        grid_y.resize(static_cast<std::size_t>(kLcdWidth * kLcdHeight));
+        const std::size_t pixel_count = static_cast<std::size_t>(kLcdWidth * kLcdHeight);
+        grid_x.resize(pixel_count);
+        grid_y.resize(pixel_count);
+        radial_mask.resize(pixel_count);
+        depth_mask.resize(pixel_count);
+        shimmer_mask.resize(pixel_count);
+        sun_mask.resize(pixel_count);
         for (int y = 0; y < kLcdHeight; ++y) {
             for (int x = 0; x < kLcdWidth; ++x) {
                 const auto idx = static_cast<std::size_t>(y * kLcdWidth + x);
-                grid_x[idx] = static_cast<float>(x);
-                grid_y[idx] = static_cast<float>(y);
+                const float xs = static_cast<float>(x);
+                const float ys = static_cast<float>(y);
+                grid_x[idx] = xs;
+                grid_y[idx] = ys;
+                const float radial_x = (xs - kLcdWidth * 0.5F) / (kLcdWidth * 0.56F);
+                const float radial_y = (ys - kLcdHeight * 0.5F) / (kLcdHeight * 0.56F);
+                const float radial = clamp_float(1.0F - std::sqrt(radial_x * radial_x + radial_y * radial_y), 0.0F, 1.0F);
+                const float depth = 0.35F + 0.65F * clamp_float((ys - (kLcdHeight * 0.08F)) / (kLcdHeight * 0.92F), 0.0F, 1.0F);
+                radial_mask[idx] = radial;
+                depth_mask[idx] = depth;
+                shimmer_mask[idx] = clamp_float((radial * 0.75F) + 0.25F, 0.0F, 1.0F) * depth;
+                sun_mask[idx] = (0.3F + radial * 0.7F) * (0.45F + depth * 0.55F);
             }
         }
     }
@@ -1108,36 +1195,66 @@ public:
     }
 
     void apply_floor_shimmer(RGBImage& image, double now) const {
-        for (int y = 0; y < kLcdHeight; ++y) {
-            for (int x = 0; x < kLcdWidth; ++x) {
-                const auto idx = static_cast<std::size_t>(y * kLcdWidth + x);
-                const float xs = g_assets->grid_x[idx];
-                const float ys = g_assets->grid_y[idx];
-                const float radial_x = (xs - kLcdWidth * 0.5F) / (kLcdWidth * 0.56F);
-                const float radial_y = (ys - kLcdHeight * 0.5F) / (kLcdHeight * 0.56F);
-                const float radial_mask = clamp_float(1.0F - std::hypot(radial_x, radial_y), 0.0F, 1.0F);
-                const float depth_mask = 0.35F + 0.65F * clamp_float((ys - (kLcdHeight * 0.08F)) / (kLcdHeight * 0.92F), 0.0F, 1.0F);
-                const float shimmer_mask = clamp_float((radial_mask * 0.75F) + 0.25F, 0.0F, 1.0F) * depth_mask;
-                const float drift_x = xs + std::sin((ys * 0.026F) - static_cast<float>(now) * 0.95F) * 11.0F;
-                const float drift_y = ys + std::sin((xs * 0.021F) + static_cast<float>(now) * 0.75F) * 8.0F;
-                const float wave1 = std::sin(drift_x * 0.102F + static_cast<float>(now) * 3.0F + std::sin(drift_y * 0.054F - static_cast<float>(now) * 1.2F) * 1.9F);
-                const float wave2 = std::sin((drift_x + drift_y) * 0.064F - static_cast<float>(now) * 3.5F);
-                const float wave3 = std::sin(std::hypot(drift_x - kLcdWidth * 0.58F, drift_y - kLcdHeight * 0.22F) * 0.12F - static_cast<float>(now) * 2.4F);
-                const float wave4 = std::sin((drift_x * 0.036F) - (drift_y * 0.071F) + static_cast<float>(now) * 1.6F);
-                float caustic = std::max(0.0F, wave1 + wave2 * 0.82F + wave3 * 0.72F + wave4 * 0.45F - 1.05F);
-                caustic = std::pow(caustic, 1.48F) * shimmer_mask * 56.0F;
-                float sun_glow = std::max(0.0F,
-                    std::sin((xs * 0.031F) - (ys * 0.043F) + static_cast<float>(now) * 1.8F) +
-                    std::sin((xs * 0.018F) + (ys * 0.026F) - static_cast<float>(now) * 1.15F) - 0.1F);
-                sun_glow = std::pow(sun_glow, 1.65F) * (0.3F + radial_mask * 0.7F) * (0.45F + depth_mask * 0.55F) * 16.0F;
-                const auto base = image.get(x, y);
-                image.set(x, y, clamp_color({
-                    static_cast<int>(std::lround(base.r + caustic * 0.44F + sun_glow * 0.32F)),
-                    static_cast<int>(std::lround(base.g + caustic * 0.92F + sun_glow * 0.58F)),
-                    static_cast<int>(std::lround(base.b + caustic * 0.66F + sun_glow * 0.40F)),
-                }));
-            }
+        auto* pixels = image.pixels.data();
+        const float now_f = static_cast<float>(now);
+#if KOI_POND_HAS_XTENSOR
+        static const auto sin_vec = xt::vectorize([](float angle) {
+            return fast_sin(angle);
+        });
+        const auto xs = xt::adapt(g_assets->grid_x, {static_cast<std::size_t>(kLcdHeight), static_cast<std::size_t>(kLcdWidth)});
+        const auto ys = xt::adapt(g_assets->grid_y, {static_cast<std::size_t>(kLcdHeight), static_cast<std::size_t>(kLcdWidth)});
+        const auto shimmer_mask = xt::adapt(g_assets->shimmer_mask, {static_cast<std::size_t>(kLcdHeight), static_cast<std::size_t>(kLcdWidth)});
+        const auto sun_mask = xt::adapt(g_assets->sun_mask, {static_cast<std::size_t>(kLcdHeight), static_cast<std::size_t>(kLcdWidth)});
+        const auto drift_x = xt::eval(xs + sin_vec((ys * 0.026F) - now_f * 0.95F) * 11.0F);
+        const auto drift_y = xt::eval(ys + sin_vec((xs * 0.021F) + now_f * 0.75F) * 8.0F);
+        const auto wave1 = xt::eval(sin_vec(drift_x * 0.102F + now_f * 3.0F + sin_vec(drift_y * 0.054F - now_f * 1.2F) * 1.9F));
+        const auto wave2 = xt::eval(sin_vec((drift_x + drift_y) * 0.064F - now_f * 3.5F));
+        const auto wave3 = xt::eval(sin_vec(xt::sqrt(xt::square(drift_x - kLcdWidth * 0.58F) + xt::square(drift_y - kLcdHeight * 0.22F)) * 0.12F - now_f * 2.4F));
+        const auto wave4 = xt::eval(sin_vec((drift_x * 0.036F) - (drift_y * 0.071F) + now_f * 1.6F));
+        auto caustic = xt::eval(xt::maximum(0.0F, wave1 + wave2 * 0.82F + wave3 * 0.72F + wave4 * 0.45F - 1.05F));
+        caustic = xt::eval(xt::pow(caustic, 1.48F) * shimmer_mask * 56.0F);
+        auto sun_glow = xt::eval(xt::maximum(0.0F,
+            sin_vec((xs * 0.031F) - (ys * 0.043F) + now_f * 1.8F) +
+            sin_vec((xs * 0.018F) + (ys * 0.026F) - now_f * 1.15F) - 0.1F));
+        sun_glow = xt::eval(xt::pow(sun_glow, 1.65F) * sun_mask * 16.0F);
+
+        const auto* caustic_data = caustic.data();
+        const auto* sun_glow_data = sun_glow.data();
+        const std::size_t pixel_count = static_cast<std::size_t>(kLcdWidth * kLcdHeight);
+        for (std::size_t idx = 0, pixel_idx = 0; idx < pixel_count; ++idx, pixel_idx += 3U) {
+            const float caustic_value = caustic_data[idx];
+            const float sun_glow_value = sun_glow_data[idx];
+            pixels[pixel_idx] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(pixels[pixel_idx] + caustic_value * 0.44F + sun_glow_value * 0.32F)), 0, 255));
+            pixels[pixel_idx + 1U] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(pixels[pixel_idx + 1U] + caustic_value * 0.92F + sun_glow_value * 0.58F)), 0, 255));
+            pixels[pixel_idx + 2U] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(pixels[pixel_idx + 2U] + caustic_value * 0.66F + sun_glow_value * 0.40F)), 0, 255));
         }
+#else
+        parallel_for_rows(kLcdHeight, [&](int row_begin, int row_end) {
+            for (int y = row_begin; y < row_end; ++y) {
+                for (int x = 0; x < kLcdWidth; ++x) {
+                    const auto idx = static_cast<std::size_t>(y * kLcdWidth + x);
+                    const auto pixel_idx = idx * 3U;
+                    const float xs = g_assets->grid_x[idx];
+                    const float ys = g_assets->grid_y[idx];
+                    const float drift_x = xs + fast_sin((ys * 0.026F) - now_f * 0.95F) * 11.0F;
+                    const float drift_y = ys + fast_sin((xs * 0.021F) + now_f * 0.75F) * 8.0F;
+                    const float wave1 = fast_sin(drift_x * 0.102F + now_f * 3.0F + fast_sin(drift_y * 0.054F - now_f * 1.2F) * 1.9F);
+                    const float wave2 = fast_sin((drift_x + drift_y) * 0.064F - now_f * 3.5F);
+                    const float wave3 = fast_sin(std::sqrt((drift_x - kLcdWidth * 0.58F) * (drift_x - kLcdWidth * 0.58F) + (drift_y - kLcdHeight * 0.22F) * (drift_y - kLcdHeight * 0.22F)) * 0.12F - now_f * 2.4F);
+                    const float wave4 = fast_sin((drift_x * 0.036F) - (drift_y * 0.071F) + now_f * 1.6F);
+                    float caustic = std::max(0.0F, wave1 + wave2 * 0.82F + wave3 * 0.72F + wave4 * 0.45F - 1.05F);
+                    caustic = std::pow(caustic, 1.48F) * g_assets->shimmer_mask[idx] * 56.0F;
+                    float sun_glow = std::max(0.0F,
+                        fast_sin((xs * 0.031F) - (ys * 0.043F) + now_f * 1.8F) +
+                        fast_sin((xs * 0.018F) + (ys * 0.026F) - now_f * 1.15F) - 0.1F);
+                    sun_glow = std::pow(sun_glow, 1.65F) * g_assets->sun_mask[idx] * 16.0F;
+                    pixels[pixel_idx] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(pixels[pixel_idx] + caustic * 0.44F + sun_glow * 0.32F)), 0, 255));
+                    pixels[pixel_idx + 1U] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(pixels[pixel_idx + 1U] + caustic * 0.92F + sun_glow * 0.58F)), 0, 255));
+                    pixels[pixel_idx + 2U] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(pixels[pixel_idx + 2U] + caustic * 0.66F + sun_glow * 0.40F)), 0, 255));
+                }
+            }
+        });
+#endif
     }
 
     RGBImage apply_ripple_distortion(const RGBImage& input, double now) const {
@@ -1145,37 +1262,83 @@ public:
             return input;
         }
         RGBImage out(kLcdWidth, kLcdHeight);
+        const auto* src = input.pixels.data();
+        auto* dst = out.pixels.data();
+        const float now_f = static_cast<float>(now);
+#if KOI_POND_HAS_XTENSOR
+        static const auto sin_vec = xt::vectorize([](float angle) {
+            return fast_sin(angle);
+        });
+        const auto xs = xt::adapt(g_assets->grid_x, {static_cast<std::size_t>(kLcdHeight), static_cast<std::size_t>(kLcdWidth)});
+        const auto ys = xt::adapt(g_assets->grid_y, {static_cast<std::size_t>(kLcdHeight), static_cast<std::size_t>(kLcdWidth)});
+        xt::xtensor<float, 2> offset_x = xt::zeros<float>({static_cast<std::size_t>(kLcdHeight), static_cast<std::size_t>(kLcdWidth)});
+        xt::xtensor<float, 2> offset_y = xt::zeros<float>({static_cast<std::size_t>(kLcdHeight), static_cast<std::size_t>(kLcdWidth)});
+        xt::xtensor<float, 2> highlight = xt::zeros<float>({static_cast<std::size_t>(kLcdHeight), static_cast<std::size_t>(kLcdWidth)});
+        for (const auto& ripple : ripples) {
+            const auto dx = xt::eval(xs - ripple.x);
+            const auto dy = xt::eval(ys - ripple.y);
+            const auto dist = xt::eval(xt::sqrt(dx * dx + dy * dy));
+            const auto safe_dist = xt::eval(xt::maximum(dist, 1.0F));
+            const float ring_width = 5.5F + ripple.radius * 0.02F;
+            const float denom = 2.0F * ring_width * ring_width;
+            const auto ring = xt::eval(xt::exp(-(xt::square(dist - ripple.radius)) / denom));
+            const auto wave = xt::eval(sin_vec((dist - ripple.radius) * 0.85F - now_f * 10.0F));
+            const auto strength = xt::eval(ring * wave * ripple.alpha * (3.5F + ripple.radius * 0.015F));
+            offset_x += (dx / safe_dist) * strength;
+            offset_y += (dy / safe_dist) * strength * 0.7F;
+            highlight += ring * xt::clip(wave, 0.0F, 1.0F) * ripple.alpha * 18.0F;
+        }
+
+        const auto* offset_x_data = offset_x.data();
+        const auto* offset_y_data = offset_y.data();
+        const auto* highlight_data = highlight.data();
         for (int y = 0; y < kLcdHeight; ++y) {
             for (int x = 0; x < kLcdWidth; ++x) {
                 const auto idx = static_cast<std::size_t>(y * kLcdWidth + x);
-                const float xs = g_assets->grid_x[idx];
-                const float ys = g_assets->grid_y[idx];
-                float offset_x = 0.0F;
-                float offset_y = 0.0F;
-                float highlight = 0.0F;
-                for (const auto& ripple : ripples) {
-                    const float dx = xs - ripple.x;
-                    const float dy = ys - ripple.y;
-                    const float dist = std::hypot(dx, dy);
-                    const float safe_dist = std::max(dist, 1.0F);
-                    const float ring_width = 5.5F + ripple.radius * 0.02F;
-                    const float ring = std::exp(-((dist - ripple.radius) * (dist - ripple.radius)) / (2.0F * ring_width * ring_width));
-                    const float wave = std::sin((dist - ripple.radius) * 0.85F - static_cast<float>(now) * 10.0F);
-                    const float strength = ring * wave * ripple.alpha * (3.5F + ripple.radius * 0.015F);
-                    offset_x += (dx / safe_dist) * strength;
-                    offset_y += (dy / safe_dist) * strength * 0.7F;
-                    highlight += ring * clamp_float(wave, 0.0F, 1.0F) * ripple.alpha * 18.0F;
-                }
-                const int sx = clamp_int(static_cast<int>(std::lround(xs - offset_x)), 0, kLcdWidth - 1);
-                const int sy = clamp_int(static_cast<int>(std::lround(ys - offset_y)), 0, kLcdHeight - 1);
-                const auto sampled = input.get(sx, sy);
-                out.set(x, y, clamp_color({
-                    static_cast<int>(std::lround(sampled.r + highlight * 0.30F)),
-                    static_cast<int>(std::lround(sampled.g + highlight * 0.65F)),
-                    static_cast<int>(std::lround(sampled.b + highlight * 0.90F)),
-                }));
+                const int sx = clamp_int(static_cast<int>(std::lround(static_cast<float>(x) - offset_x_data[idx])), 0, kLcdWidth - 1);
+                const int sy = clamp_int(static_cast<int>(std::lround(static_cast<float>(y) - offset_y_data[idx])), 0, kLcdHeight - 1);
+                const auto sample_idx = static_cast<std::size_t>((sy * kLcdWidth + sx) * 3);
+                const auto dst_idx = idx * 3U;
+                const float highlight_value = highlight_data[idx];
+                dst[dst_idx] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(src[sample_idx] + highlight_value * 0.30F)), 0, 255));
+                dst[dst_idx + 1U] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(src[sample_idx + 1U] + highlight_value * 0.65F)), 0, 255));
+                dst[dst_idx + 2U] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(src[sample_idx + 2U] + highlight_value * 0.90F)), 0, 255));
             }
         }
+#else
+        parallel_for_rows(kLcdHeight, [&](int row_begin, int row_end) {
+            for (int y = row_begin; y < row_end; ++y) {
+                for (int x = 0; x < kLcdWidth; ++x) {
+                    const auto idx = static_cast<std::size_t>(y * kLcdWidth + x);
+                    const float xs = g_assets->grid_x[idx];
+                    const float ys = g_assets->grid_y[idx];
+                    float offset_x = 0.0F;
+                    float offset_y = 0.0F;
+                    float highlight = 0.0F;
+                    for (const auto& ripple : ripples) {
+                        const float dx = xs - ripple.x;
+                        const float dy = ys - ripple.y;
+                        const float dist = std::sqrt(dx * dx + dy * dy);
+                        const float safe_dist = std::max(dist, 1.0F);
+                        const float ring_width = 5.5F + ripple.radius * 0.02F;
+                        const float ring = std::exp(-((dist - ripple.radius) * (dist - ripple.radius)) / (2.0F * ring_width * ring_width));
+                        const float wave = fast_sin((dist - ripple.radius) * 0.85F - now_f * 10.0F);
+                        const float strength = ring * wave * ripple.alpha * (3.5F + ripple.radius * 0.015F);
+                        offset_x += (dx / safe_dist) * strength;
+                        offset_y += (dy / safe_dist) * strength * 0.7F;
+                        highlight += ring * clamp_float(wave, 0.0F, 1.0F) * ripple.alpha * 18.0F;
+                    }
+                    const int sx = clamp_int(static_cast<int>(std::lround(xs - offset_x)), 0, kLcdWidth - 1);
+                    const int sy = clamp_int(static_cast<int>(std::lround(ys - offset_y)), 0, kLcdHeight - 1);
+                    const auto sample_idx = static_cast<std::size_t>((sy * kLcdWidth + sx) * 3);
+                    const auto dst_idx = idx * 3U;
+                    dst[dst_idx] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(src[sample_idx] + highlight * 0.30F)), 0, 255));
+                    dst[dst_idx + 1U] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(src[sample_idx + 1U] + highlight * 0.65F)), 0, 255));
+                    dst[dst_idx + 2U] = static_cast<std::uint8_t>(clamp_int(static_cast<int>(std::lround(src[sample_idx + 2U] + highlight * 0.90F)), 0, 255));
+                }
+            }
+        });
+#endif
         return out;
     }
 
@@ -1203,10 +1366,10 @@ public:
                     for (const auto& ripple : ripples) {
                         const float dx = global_x - ripple.x;
                         const float dy = global_y - ripple.y;
-                        const float dist = std::hypot(dx, dy);
+                        const float dist = std::sqrt(dx * dx + dy * dy);
                         const float ring_width = 7.5F + ripple.radius * 0.035F;
                         const float ring = std::exp(-((dist - ripple.radius) * (dist - ripple.radius)) / (2.0F * ring_width * ring_width));
-                        const float wave = std::sin((dist - ripple.radius) * 0.62F - static_cast<float>(now) * 7.5F);
+                        const float wave = fast_sin((dist - ripple.radius) * 0.62F - static_cast<float>(now) * 7.5F);
                         response += ring * wave * ripple.alpha;
                     }
                     const float rim_mask = clamp_float(alpha * (1.0F - alpha) * 5.0F, 0.0F, 1.0F);
