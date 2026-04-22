@@ -2849,10 +2849,15 @@ class Lilypad:
             b = b.rotate(rot, expand=True, resample=Image.Resampling.BICUBIC)
         self.sprite = b
 
-    def draw(self, img_bg):
+    def bounds(self):
         w, h = self.sprite.size
+        px = int(self.pos[0] - w // 2)
+        py = int(self.pos[1] - h // 2)
+        return px, py, w, h
+
+    def draw(self, img_bg):
+        px, py, w, h = self.bounds()
         # Paste lilypad on the pond
-        px, py = int(self.pos[0] - w//2), int(self.pos[1] - h//2)
         try:
             img_bg.paste(self.sprite, (px, py), self.sprite)
         except ValueError:
@@ -3217,6 +3222,63 @@ class Pond:
         refracted[..., 2] = np.clip(refracted[..., 2] + highlight * 0.90, 0, 255)
 
         return Image.fromarray(refracted.astype(np.uint8), "RGB")
+
+    def _apply_lilypad_ripple_reflection(self, img, now):
+        if not self.ripples:
+            return img
+
+        base = img.convert("RGBA")
+
+        for pad in self.lilypads:
+            px, py, w, h = pad.bounds()
+            if px >= LCD_WIDTH or py >= LCD_HEIGHT or px + w <= 0 or py + h <= 0:
+                continue
+
+            sprite = pad.sprite
+            sprite_arr = np.array(sprite, dtype=np.uint8)
+            alpha = sprite_arr[..., 3].astype(np.float32) / 255.0
+            if not np.any(alpha > 0.05):
+                continue
+
+            local_x, local_y = np.meshgrid(
+                np.arange(w, dtype=np.float32) + px,
+                np.arange(h, dtype=np.float32) + py,
+            )
+            response = np.zeros((h, w), dtype=np.float32)
+
+            for rx, ry, rad, ripple_alpha in self.ripples:
+                dx = local_x - rx
+                dy = local_y - ry
+                dist = np.hypot(dx, dy)
+                ring_width = 7.5 + (rad * 0.035)
+                ring = np.exp(-((dist - rad) ** 2) / (2.0 * ring_width * ring_width))
+                wave = np.sin((dist - rad) * 0.62 - now * 7.5)
+                response += ring * wave * ripple_alpha
+
+            if not np.any(np.abs(response) > 0.01):
+                continue
+
+            rim_mask = np.clip(alpha * (1.0 - alpha) * 5.0, 0.0, 1.0)
+            pad_mask = np.clip(alpha * 0.38 + rim_mask * 0.62, 0.0, 1.0)
+            positive = np.clip(response, 0.0, 1.0) * pad_mask
+            negative = np.clip(-response, 0.0, 1.0) * pad_mask
+
+            overlay = np.zeros((h, w, 4), dtype=np.uint8)
+            overlay[..., 0] = np.clip(positive * 150.0, 0, 255).astype(np.uint8)
+            overlay[..., 1] = np.clip(positive * 185.0, 0, 255).astype(np.uint8)
+            overlay[..., 2] = np.clip(positive * 175.0, 0, 255).astype(np.uint8)
+            overlay[..., 3] = np.clip(positive * 34.0 + negative * 18.0, 0, 255).astype(np.uint8)
+
+            if not np.any(overlay[..., 3] > 0):
+                continue
+
+            overlay_img = Image.fromarray(overlay, "RGBA")
+            try:
+                base.alpha_composite(overlay_img, (px, py))
+            except ValueError:
+                pass
+
+        return base.convert("RGB")
     
     def add_ripple(self, x, y):
         self.ripples.append([x, y, 0, 1.0])
@@ -3250,25 +3312,7 @@ class Pond:
         for pad in self.lilypads:
             pad.draw(img)
 
-        draw = ImageDraw.Draw(img)
-            
-        for r in self.ripples:
-            alpha = max(0.0, min(1.0, r[3]))
-            rad = r[2]
-            ring_color = (
-                int(90 + 90 * alpha),
-                int(170 + 60 * alpha),
-                int(200 + 40 * alpha),
-            )
-            inner_color = (
-                int(120 + 80 * alpha),
-                int(205 + 35 * alpha),
-                int(225 + 25 * alpha),
-            )
-            draw.ellipse((r[0]-rad, r[1]-rad, r[0]+rad, r[1]+rad), outline=ring_color, width=2)
-            if rad > 8:
-                inner = rad - 4
-                draw.ellipse((r[0]-inner, r[1]-inner, r[0]+inner, r[1]+inner), outline=inner_color, width=1)
+        img = self._apply_lilypad_ripple_reflection(img, now)
             
         return img
 
