@@ -64,8 +64,22 @@ class DisplayDriver:
             self._bulk_chunk_size = 65536
             self._log(f"[SPI] Opened /dev/spidev{self.spi_bus}.{self.spi_device} at {self.spi_speed_hz/1e6:.1f}MHz")
         except Exception as e:
-            self._log(f"[ERROR] Failed to open SPI: {e}", force=True)
-            raise
+            if self.spi_bus == 0:
+                self._log(f"[WARN] Failed to open SPI bus 0: {e}. Retrying with Pi 5 default bus 10...", force=True)
+                self.spi_bus = 10
+                try:
+                    self.spi.open(self.spi_bus, self.spi_device)
+                    self.spi.max_speed_hz = self.spi_speed_hz
+                    self.spi.mode = 0
+                    self._bulk_write = self.spi.writebytes2 if hasattr(self.spi, "writebytes2") else self.spi.writebytes
+                    self._bulk_chunk_size = 65536
+                    self._log(f"[SPI] Opened FALLBACK /dev/spidev{self.spi_bus}.{self.spi_device} at {self.spi_speed_hz/1e6:.1f}MHz")
+                except Exception as e2:
+                    self._log(f"[ERROR] Failed to open fallback SPI: {e2}", force=True)
+                    raise
+            else:
+                self._log(f"[ERROR] Failed to open SPI: {e}", force=True)
+                raise
         
         # Initialize GPIO
         self._log("[GPIO] Initializing GPIO control...")
