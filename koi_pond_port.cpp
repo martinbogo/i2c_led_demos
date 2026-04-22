@@ -1594,6 +1594,29 @@ std::atomic<std::uint64_t> g_gesture_sequence{0};
 std::atomic<bool> g_is_touched{false};
 std::atomic<bool> g_stop_touch{false};
 std::atomic<bool> g_should_exit{false};
+std::atomic<bool> g_debug_touch{false};
+
+const char* gesture_name(int code) {
+    if (code == kGestureSingleTap) {
+        return "single_tap";
+    }
+    if (code == kGestureDoubleTap) {
+        return "double_tap";
+    }
+    if (code == kGestureLongPress) {
+        return "long_press";
+    }
+    if (code == 0) {
+        return "none";
+    }
+    return "unknown";
+}
+
+void touch_debug_log(const std::string& message) {
+    if (g_debug_touch.load()) {
+        std::cout << "[touch] " << message << std::endl;
+    }
+}
 
 void handle_exit_signal(int /*signum*/) {
     g_should_exit.store(true);
@@ -1612,19 +1635,25 @@ void touch_thread_func() {
             i2c_ok = hal_i2c_init(kTouchI2CFallback) == 0;
         }
         if (!i2c_ok) {
+            touch_debug_log("failed to open CST816S on configured I2C buses");
             return;
         }
+        touch_debug_log(std::string("opened CST816S on ") + (i2c_ok ? "configured I2C bus" : "fallback I2C bus"));
         hal_i2c_write_byte(kTouchAddr, 0xFE, 0x01);
         hal_i2c_write_byte(kTouchAddr, 0xFA, 0x41);
         hal_i2c_write_byte(kTouchAddr, 0xEC, 0x07);
         hal_i2c_write_byte(kTouchAddr, 0xEE, 0x01);
         hal_i2c_write_byte(kTouchAddr, 0xED, 0x0F);
+        touch_debug_log("initialized CST816S gesture registers");
 
         double last_double_tap_emit = -10.0;
         double last_long_press_emit = -10.0;
         int last_hw_gesture = -1;
         int last_hw_gesture_x = -1;
         int last_hw_gesture_y = -1;
+        std::array<std::uint8_t, 6> last_logged_packet{{0, 0, 0, 0, 0, 0}};
+        bool have_last_logged_packet = false;
+        bool last_logged_touch_active = false;
 
         while (!g_stop_touch.load()) {
             std::uint8_t data[6] = {0, 0, 0, 0, 0, 0};
@@ -1643,37 +1672,68 @@ void touch_thread_func() {
                     g_touch_x.store(mapped_x);
                     g_touch_y.store(y);
                     g_is_touched.store(data[1] > 0);
+                    const std::array<std::uint8_t, 6> packet{{data[0], data[1], data[2], data[3], data[4], data[5]}};
+                    if (g_debug_touch.load() && (!have_last_logged_packet || packet != last_logged_packet)) {
+                        std::cout << "[touch] raw=("
+                                  << static_cast<int>(data[0]) << ','
+                                  << static_cast<int>(data[1]) << ','
+                                  << static_cast<int>(data[2]) << ','
+                                  << static_cast<int>(data[3]) << ','
+                                  << static_cast<int>(data[4]) << ','
+                                  << static_cast<int>(data[5]) << ") contacts="
+                                  << static_cast<int>(data[1])
+                                  << " gesture=" << gesture_name(gesture)
+                                  << " mapped=(" << mapped_x << ',' << y << ")"
+                                  << std::endl;
+                        last_logged_packet = packet;
+                        have_last_logged_packet = true;
+                        last_logged_touch_active = true;
+                    }
                     const bool new_hw_signature = gesture != last_hw_gesture || mapped_x != last_hw_gesture_x || y != last_hw_gesture_y;
 
                     if (gesture == kGestureSingleTap && new_hw_signature) {
                         g_gesture_x.store(mapped_x);
                         g_gesture_y.store(y);
                         g_gesture_code.store(gesture);
-                        g_gesture_sequence.fetch_add(1);
+                        const auto seq = g_gesture_sequence.fetch_add(1) + 1;
                         last_hw_gesture = gesture;
                         last_hw_gesture_x = mapped_x;
                         last_hw_gesture_y = y;
+                        touch_debug_log("emit gesture=single_tap at (" + std::to_string(mapped_x) + "," + std::to_string(y) + ") seq=" + std::to_string(seq));
                     } else if (gesture == kGestureDoubleTap && new_hw_signature && now - last_double_tap_emit > 0.35) {
                         g_gesture_x.store(mapped_x);
                         g_gesture_y.store(y);
                         g_gesture_code.store(gesture);
-                        g_gesture_sequence.fetch_add(1);
+                        const auto seq = g_gesture_sequence.fetch_add(1) + 1;
                         last_double_tap_emit = now;
                         last_hw_gesture = gesture;
                         last_hw_gesture_x = mapped_x;
                         last_hw_gesture_y = y;
+                        touch_debug_log("emit gesture=double_tap at (" + std::to_string(mapped_x) + "," + std::to_string(y) + ") seq=" + std::to_string(seq));
                     } else if (gesture == kGestureLongPress && new_hw_signature && now - last_long_press_emit > 1.10) {
                         g_gesture_x.store(mapped_x);
                         g_gesture_y.store(y);
                         g_gesture_code.store(gesture);
-                        g_gesture_sequence.fetch_add(1);
+                        const auto seq = g_gesture_sequence.fetch_add(1) + 1;
                         last_long_press_emit = now;
                         last_hw_gesture = gesture;
                         last_hw_gesture_x = mapped_x;
                         last_hw_gesture_y = y;
+                        touch_debug_log("emit gesture=long_press at (" + std::to_string(mapped_x) + "," + std::to_string(y) + ") seq=" + std::to_string(seq));
                     }
                 } else {
+                    if (g_debug_touch.load() && last_logged_touch_active) {
+                        touch_debug_log("touch release");
+                        last_logged_touch_active = false;
+                        have_last_logged_packet = false;
+                    }
                     g_is_touched.store(false);
+                }
+            } else {
+                if (g_debug_touch.load()) {
+                    touch_debug_log("read error from CST816S");
+                    have_last_logged_packet = false;
+                    last_logged_touch_active = false;
                 }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -1686,7 +1746,7 @@ void touch_thread_func() {
 
 }  // namespace
 
-int koi_pond_run() {
+int koi_pond_run(bool debug_touch) {
     auto previous_sigint = std::signal(SIGINT, handle_exit_signal);
 #ifdef SIGHUP
     auto previous_sighup = std::signal(SIGHUP, handle_exit_signal);
@@ -1697,12 +1757,16 @@ int koi_pond_run() {
         std::cout << "Loading assets..." << std::endl;
         PondAssets assets;
         g_assets = &assets;
+        g_debug_touch.store(debug_touch);
 
         std::cout << "Initializing display..." << std::endl;
         WaveshareDisplayDriver driver(kSpiSpeedHz);
         driver.init();
 
         std::cout << "Starting touch thread..." << std::endl;
+        if (debug_touch) {
+            std::cout << "Touch debug logging enabled." << std::endl;
+        }
         g_stop_touch.store(false);
         g_should_exit.store(false);
         touch_thread = std::thread(touch_thread_func);
@@ -1717,6 +1781,12 @@ int koi_pond_run() {
             if (gesture_sequence != last_gesture_sequence) {
                 last_gesture_sequence = gesture_sequence;
                 const int gesture = g_gesture_code.load();
+                if (debug_touch) {
+                    std::cout << "[touch] main received gesture=" << gesture_name(gesture)
+                              << " at (" << g_gesture_x.load() << ',' << g_gesture_y.load() << ")"
+                              << " seq=" << gesture_sequence
+                              << std::endl;
+                }
                 if (gesture == kGestureSingleTap) {
                     pond.add_ripple(static_cast<float>(g_gesture_x.load()), static_cast<float>(g_gesture_y.load()));
                 } else if (gesture == kGestureDoubleTap) {
@@ -1738,6 +1808,7 @@ int koi_pond_run() {
         if (touch_thread.joinable()) {
             touch_thread.join();
         }
+        g_debug_touch.store(false);
         driver.cleanup();
 
         std::signal(SIGINT, previous_sigint);
@@ -1750,6 +1821,7 @@ int koi_pond_run() {
         if (touch_thread.joinable()) {
             touch_thread.join();
         }
+        g_debug_touch.store(false);
         std::signal(SIGINT, previous_sigint);
 #ifdef SIGHUP
         std::signal(SIGHUP, previous_sighup);
@@ -1763,6 +1835,7 @@ int koi_pond_run() {
         if (touch_thread.joinable()) {
             touch_thread.join();
         }
+        g_debug_touch.store(false);
         std::signal(SIGINT, previous_sigint);
 #ifdef SIGHUP
         std::signal(SIGHUP, previous_sighup);

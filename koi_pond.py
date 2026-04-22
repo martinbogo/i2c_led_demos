@@ -9,6 +9,7 @@ Simulates boid-based fish with photorealistic sprites sliced to morph on kinemat
 """
 
 import base64
+import argparse
 import io
 import math
 import random
@@ -3692,7 +3693,24 @@ GESTURE_LONG_PRESS = 0x0C
 touch_x, touch_y, is_touched = -1, -1, False
 gesture_x, gesture_y, gesture_code, gesture_seq = -1, -1, 0, 0
 
-def touch_thread(driver):
+def _gesture_name(code):
+    if code == GESTURE_SINGLE_TAP:
+        return "single_tap"
+    if code == GESTURE_DOUBLE_TAP:
+        return "double_tap"
+    if code == GESTURE_LONG_PRESS:
+        return "long_press"
+    if code == 0:
+        return "none"
+    return f"0x{code:02X}"
+
+
+def _touch_debug_log(enabled, message):
+    if enabled:
+        print(f"[touch] {message}", flush=True)
+
+
+def touch_thread(driver, debug=False):
     global touch_x, touch_y, is_touched, gesture_x, gesture_y, gesture_code, gesture_seq
     try:
         if "gpiod" in globals():
@@ -3712,7 +3730,10 @@ def touch_thread(driver):
                 bus = None
 
         if bus is None:
+            _touch_debug_log(debug, "failed to open CST816S on I2C bus 1 or 3")
             return
+
+        _touch_debug_log(debug, f"opened CST816S on I2C bus {bus.fd}")
 
         try:
             bus.write_byte_data(0x15, 0xFE, 0x01)
@@ -3720,12 +3741,16 @@ def touch_thread(driver):
             bus.write_byte_data(0x15, 0xEC, 0x07)
             bus.write_byte_data(0x15, 0xEE, 0x01)
             bus.write_byte_data(0x15, 0xED, 0x0F)
+            _touch_debug_log(debug, "initialized CST816S gesture registers")
         except:
+            _touch_debug_log(debug, "failed to write one or more CST816S gesture registers")
             pass
 
         last_double_tap_emit = 0.0
         last_long_press_emit = 0.0
         last_hw_gesture_signature = None
+        last_logged_packet = None
+        last_logged_touch_active = False
 
         while True:
             try:
@@ -3740,31 +3765,54 @@ def touch_thread(driver):
                     x = (LCD_WIDTH - 1) - x
                     touch_x, touch_y, is_touched = x, y, True
                     hw_signature = (gesture, x, y)
+                    packet_signature = tuple(data)
+                    if debug and packet_signature != last_logged_packet:
+                        _touch_debug_log(
+                            True,
+                            f"raw={packet_signature} contacts={data[1]} gesture={_gesture_name(gesture)} mapped=({x},{y})",
+                        )
+                        last_logged_packet = packet_signature
+                        last_logged_touch_active = True
 
                     if gesture == GESTURE_SINGLE_TAP and hw_signature != last_hw_gesture_signature:
                         gesture_x, gesture_y, gesture_code = x, y, gesture
                         gesture_seq += 1
                         last_hw_gesture_signature = hw_signature
+                        _touch_debug_log(debug, f"emit gesture={_gesture_name(gesture)} at ({x},{y}) seq={gesture_seq}")
                     elif gesture == GESTURE_DOUBLE_TAP and hw_signature != last_hw_gesture_signature and now - last_double_tap_emit > 0.35:
                         gesture_x, gesture_y, gesture_code = x, y, gesture
                         gesture_seq += 1
                         last_double_tap_emit = now
                         last_hw_gesture_signature = hw_signature
+                        _touch_debug_log(debug, f"emit gesture={_gesture_name(gesture)} at ({x},{y}) seq={gesture_seq}")
                     elif gesture == GESTURE_LONG_PRESS and hw_signature != last_hw_gesture_signature and now - last_long_press_emit > 1.10:
                         gesture_x, gesture_y, gesture_code = x, y, gesture
                         gesture_seq += 1
                         last_long_press_emit = now
                         last_hw_gesture_signature = hw_signature
+                        _touch_debug_log(debug, f"emit gesture={_gesture_name(gesture)} at ({x},{y}) seq={gesture_seq}")
                 else:
+                    if debug and last_logged_touch_active:
+                        _touch_debug_log(True, "touch release")
+                        last_logged_touch_active = False
+                        last_logged_packet = None
                     is_touched = False
-            except Exception:
+            except Exception as exc:
+                if debug:
+                    _touch_debug_log(True, f"read error: {exc}")
+                    last_logged_packet = None
+                    last_logged_touch_active = False
                 is_touched = False
             time.sleep(0.02)
     except Exception as e:
         pass
 
-def main():
+def main(argv=None):
     global assets, gesture_seq, gesture_code, gesture_x, gesture_y
+    parser = argparse.ArgumentParser(description="Interactive koi pond demo")
+    parser.add_argument("--debug", action="store_true", help="log touch controller packets and emitted gestures")
+    args = parser.parse_args(argv)
+
     print("Loading assets...")
     assets = PondAssets()
     
@@ -3784,7 +3832,9 @@ def main():
     signal.signal(signal.SIGHUP, request_stop)
     
     print("Starting touch thread...")
-    t = threading.Thread(target=touch_thread, args=(driver,), daemon=True)
+    if args.debug:
+        print("Touch debug logging enabled.")
+    t = threading.Thread(target=touch_thread, args=(driver, args.debug), daemon=True)
     t.start()
     
     pond = Pond()
@@ -3796,6 +3846,11 @@ def main():
             t0 = time.time()
             if gesture_seq != last_gesture_seq:
                 last_gesture_seq = gesture_seq
+                if args.debug:
+                    print(
+                        f"[touch] main received gesture={_gesture_name(gesture_code)} at ({gesture_x},{gesture_y}) seq={gesture_seq}",
+                        flush=True,
+                    )
                 if gesture_code == GESTURE_SINGLE_TAP:
                     pond.add_ripple(gesture_x, gesture_y)
                 elif gesture_code == GESTURE_DOUBLE_TAP:
